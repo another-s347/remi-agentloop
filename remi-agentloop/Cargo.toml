@@ -1,0 +1,44 @@
+[package]
+name = "remi-agentloop"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+default = ["native"]
+native = ["tokio/full"]
+http-client = ["reqwest/rustls-tls"]
+http-server = ["axum", "tokio/full"]
+tracing-langsmith = ["http-client"]
+tool-bash = []
+tool-fs = []
+tool-fs-virtual = []
+tools = ["tool-bash", "tool-fs"]
+tui = ["dep:ratatui", "dep:crossterm"]
+
+[dependencies]
+remi-agentloop-macros = { path = "../remi-agentloop-macros" }
+
+futures = { workspace = true }
+async-stream = { workspace = true }
+pin-project-lite = { workspace = true }
+tokio = { workspace = true, optional = true }
+tokio-stream = { workspace = true }
+
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+tokio-util = { workspace = true, features = ["io"] }
+
+reqwest = { workspace = true, optional = true }
+axum = { workspace = true, optional = true }
+
+ratatui = { workspace = true, optional = true }
+crossterm = { workspace = true, optional = true }
+
+[[bin]]
+name = "remi-tui"
+path = "src/bin/remi-tui.rs"
+required-features = ["tui"]
