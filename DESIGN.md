@@ -21,7 +21,7 @@
 
 - **Trait 风格**：RPITIT（Rust 1.75+），实现者直接 `async fn`，适配器零成本
 - **依赖**：futures 0.3 / async-stream / pin-project-lite / serde + serde_json / thiserror / reqwest(可选) / axum(可选) / wasmi(可选) / tokio(native) / wasm-bindgen-futures(wasm-guest)
-- **Feature flags**：`native`(默认) / `http-client` / `http-server` / `wasm-host` / `wasm-guest` / `tracing-langsmith` / `tool-bash` / `tool-fs` / `tool-fs-virtual` / `tools`
+- **Feature flags**：`native`(默认) / `http-client` / `http-server` / `wasm-host` / `wasm-guest` / `tracing-langsmith` / `tool-bash` / `tool-fs` / `tool-fs-virtual` / `tools` / `tui`
 - **过程宏**：`#[tool]` 宏自动从函数签名生成 Tool impl，doc comment → description，类型 → JSON Schema
 
 ## 模块结构
@@ -58,11 +58,24 @@ src/
 │   ├── mod.rs          # Tracer trait, DynTracer, CompositeTracer, trace events
 │   ├── langsmith.rs    # LangSmithTracer [tracing-langsmith]
 │   └── stdout.rs       # StdoutTracer
+├── tui/                # TUI 终端界面              [tui]
+│   ├── mod.rs          # TuiApp, TuiEvent
+│   ├── app.rs          # 状态 + 事件处理
+│   ├── render.rs       # Ratatui 渲染
+│   ├── markdown.rs     # 流式 Markdown 解析/渲染
+│   ├── input.rs        # 输入状态 + 按键绑定
+│   ├── commands.rs     # 斜杠命令
+│   └── theme.rs        # 配色
 ├── builder.rs          # Typestate AgentBuilder
 ├── context.rs          # ContextStore trait + InMemoryStore
 ├── state.rs            # AgentLoop 状态机
 ├── types.rs            # ThreadId, RunId, MessageId, Content, ContentPart, Message, AgentEvent
 └── error.rs            # AgentError
+```
+
+```
+bin/                      # 可执行二进制
+└── remi-tui.rs           # Claude Code 风格 TUI 入口 [tui]
 ```
 
 ```
@@ -91,3 +104,4 @@ macros/                   # proc-macro crate (remi-agentloop-macros)
 | 13 | [Tracing](docs/13-tracing.md) | Tracer trait, DynTracer, LangSmithTracer, StdoutTracer, CompositeTracer, TracingLayer |
 | 14 | [Advanced Patterns](docs/14-advanced-patterns.md) | Task（独立 memory）、Sub-Agent（共享 memory）、会话分叉——可行性分析 + 实现方案 |
 | 15 | [Tool Macro & Builtins](docs/15-tool-macro-builtins.md) | #[tool] 过程宏、BashTool、FsTool、VirtualFsTool |
+| 16 | [TUI](docs/16-tui.md) | Claude Code 风格终端 UI：流式对话、Tool 可视化、Interrupt 审批、斜杠命令 |

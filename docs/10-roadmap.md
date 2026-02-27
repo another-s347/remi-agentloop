@@ -53,6 +53,11 @@
 31. 测试 + 示例
 32. `#[tool]` 宏 + 内置 tool 端到端示例
 33. BashTool 安全策略测试（白/黑名单 + 超时）
+34. `src/tui/` — TUI 模块（ratatui + crossterm + syntect）
+35. `bin/remi-tui.rs` — CLI 入口（clap）
+36. TUI Markdown 流式渲染 + 代码高亮
+37. TUI Interrupt 交互式审批
+38. TUI 端到端测试（headless terminal）
 
 ---
 
