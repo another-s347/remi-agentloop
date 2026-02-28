@@ -1,0 +1,19 @@
+# Rust build artifacts
+/target/
+
+# Editor / IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Environment / secrets
+.env
+.env.*
+
+# macOS
+.DS_Store
+
+# Flycheck (Emacs)
+flycheck0/
