@@ -28,6 +28,9 @@ pub enum AgentError {
     #[error("Thread not found: {0}")]
     ThreadNotFound(ThreadId),
 
+    #[error("Message not found: {0}")]
+    MessageNotFound(crate::types::MessageId),
+
     #[error("Run not found: {0}")]
     RunNotFound(RunId),
 
@@ -64,6 +67,7 @@ impl Clone for AgentError {
             Self::Model(s) => Self::Model(s.clone()),
             Self::MaxTurnsExceeded { max } => Self::MaxTurnsExceeded { max: *max },
             Self::ThreadNotFound(id) => Self::ThreadNotFound(id.clone()),
+            Self::MessageNotFound(id) => Self::MessageNotFound(id.clone()),
             Self::RunNotFound(id) => Self::RunNotFound(id.clone()),
             Self::InterruptNotFound(id) => Self::InterruptNotFound(id.clone()),
             Self::ResumeIncomplete { expected, got } => Self::ResumeIncomplete {

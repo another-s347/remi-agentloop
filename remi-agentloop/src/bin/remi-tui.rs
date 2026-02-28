@@ -250,6 +250,12 @@ fn handle_agent_event(app: &mut AppState, event: AgentEvent) -> bool {
             app.status.clear();
             return true;
         }
+        AgentEvent::NewMessages(_) => {
+            // Internal event — ignored in TUI mode
+        }
+        AgentEvent::NeedToolExecution { .. } => {
+            // Not expected in TUI (all tools are local)
+        }
     }
     false
 }
@@ -275,6 +281,7 @@ fn handle_key_normal(app: &mut AppState, event: crossterm::event::KeyEvent) -> O
                 handle_command(app, &input);
                 app.input.clear();
                 app.cursor = 0;
+                app.scroll = u16::MAX; // scroll to bottom to show response
                 return None;
             }
             app.command_history.push(input.clone());
@@ -311,7 +318,10 @@ fn handle_key_normal(app: &mut AppState, event: crossterm::event::KeyEvent) -> O
             if hist.is_empty() {
                 return None;
             }
-            let pos = app.history_pos.map(|p| p.saturating_sub(1)).unwrap_or(hist.len() - 1);
+            let pos = app
+                .history_pos
+                .map(|p| p.saturating_sub(1))
+                .unwrap_or(hist.len() - 1);
             app.history_pos = Some(pos);
             app.input = hist[pos].clone();
             app.cursor = app.input.len();
@@ -378,6 +388,7 @@ fn handle_command(app: &mut AppState, cmd: &str) {
                 .to_string(),
                 tool_calls: vec![],
             });
+            app.scroll = u16::MAX; // will be clamped to bottom in render
         }
         "/clear" => {
             app.messages.clear();
@@ -433,11 +444,15 @@ fn render_messages(f: &mut Frame, area: Rect, app: &AppState) {
                 lines.push(Line::from(vec![
                     Span::styled(
                         "\u{276f} ",
-                        Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+                        Style::default()
+                            .fg(Color::Cyan)
+                            .add_modifier(Modifier::BOLD),
                     ),
                     Span::styled(
                         msg.content.clone(),
-                        Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+                        Style::default()
+                            .fg(Color::White)
+                            .add_modifier(Modifier::BOLD),
                     ),
                 ]));
                 lines.push(Line::from(""));
@@ -473,7 +488,9 @@ fn render_messages(f: &mut Frame, area: Rect, app: &AppState) {
         for info in &intr.interrupts {
             lines.push(Line::from(Span::styled(
                 format!(" \u{26a0}  INTERRUPT: {} ", info.kind),
-                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
             )));
             lines.push(Line::from(format!("   tool: {}", info.tool_name)));
             if let Ok(data_str) = serde_json::to_string_pretty(&info.data) {
@@ -486,7 +503,9 @@ fn render_messages(f: &mut Frame, area: Rect, app: &AppState) {
         lines.push(Line::from(vec![
             Span::styled(
                 "  [Y] Approve  ",
-                Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
                 "[N] Reject",
@@ -529,7 +548,10 @@ fn render_tool_lines(tc: &ToolCallState) -> Vec<Line<'static>> {
         ToolStatus::Error => (Color::Red, "\u{2717} error".to_string()),
     };
 
-    let header = format!("\u{250c}\u{2500} {} \u{2500}\u{2500}\u{2500} {} \u{2500}\u{2510}", tc.name, status_label);
+    let header = format!(
+        "\u{250c}\u{2500} {} \u{2500}\u{2500}\u{2500} {} \u{2500}\u{2510}",
+        tc.name, status_label
+    );
     let footer = "\u{2514}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2518}".to_string();
 
     let mut result = vec![Line::from(Span::styled(
@@ -603,7 +625,9 @@ fn render_input(f: &mut Frame, area: Rect, app: &AppState) {
             " Running\u{2026} (Ctrl+C to abort) ",
         ),
         InputMode::Interrupt => (
-            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
             " \u{26a0} Interrupt: [Y]es / [N]o ",
         ),
     };
@@ -630,7 +654,10 @@ fn render_input(f: &mut Frame, area: Rect, app: &AppState) {
             Span::raw(before),
             Span::styled(
                 cursor_char,
-                Style::default().fg(Color::Black).bg(Color::White).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::White)
+                    .add_modifier(Modifier::BOLD),
             ),
             Span::raw(after),
         ];
@@ -759,7 +786,7 @@ async fn run_app(
                     app.mode = InputMode::Running;
                     app.status = "resuming\u{2026}".to_string();
 
-                    match agent.chat(resume_msg).await {
+                    match agent.chat(resume_msg.into()).await {
                         Err(e) => {
                             app.status = format!("error: {e}");
                             app.mode = InputMode::Normal;
@@ -797,7 +824,7 @@ async fn run_app(
             app.status = "thinking\u{2026}".to_string();
             terminal.draw(|f| render(f, &app))?;
 
-            match agent.chat(input).await {
+            match agent.chat(input.into()).await {
                 Err(e) => {
                     app.status = format!("error: {e}");
                     app.mode = InputMode::Normal;
@@ -864,4 +891,3 @@ async fn run_stream(
 
     Ok(())
 }
-

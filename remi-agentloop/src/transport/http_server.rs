@@ -9,8 +9,9 @@ use axum::Json;
 use futures::{Stream, StreamExt};
 
 use crate::agent::Agent;
-use crate::protocol::{ProtocolAgent, ProtocolEvent, ProtocolRequest};
+use crate::protocol::{ProtocolAgent, ProtocolEvent};
 use crate::transport::sse::encode_sse_event;
+use crate::types::LoopInput;
 
 /// Wraps a ProtocolAgent as an HTTP SSE server (axum-based)
 pub struct HttpSseServer<A: ProtocolAgent + Send + Sync + 'static> {
@@ -49,7 +50,7 @@ where
 
 async fn handle_chat<A: ProtocolAgent + Send + Sync + 'static>(
     State(agent): State<Arc<A>>,
-    Json(req): Json<ProtocolRequest>,
+    Json(req): Json<LoopInput>,
 ) -> Sse<impl Stream<Item = Result<Event, Infallible>>>
 where
     A::Error: Send,

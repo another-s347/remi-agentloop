@@ -25,27 +25,67 @@ pub struct MessageId(pub String);
 pub struct InterruptId(pub String);
 
 impl ThreadId {
-    pub fn new() -> Self { Self(uuid_v4()) }
+    pub fn new() -> Self {
+        Self(uuid_v4())
+    }
 }
 impl RunId {
-    pub fn new() -> Self { Self(uuid_v4()) }
+    pub fn new() -> Self {
+        Self(uuid_v4())
+    }
 }
 impl MessageId {
-    pub fn new() -> Self { Self(uuid_v4()) }
+    pub fn new() -> Self {
+        Self(uuid_v4())
+    }
 }
 impl InterruptId {
-    pub fn new() -> Self { Self(uuid_v4()) }
+    pub fn new() -> Self {
+        Self(uuid_v4())
+    }
 }
 
-impl Default for ThreadId { fn default() -> Self { Self::new() } }
-impl Default for RunId    { fn default() -> Self { Self::new() } }
-impl Default for MessageId { fn default() -> Self { Self::new() } }
-impl Default for InterruptId { fn default() -> Self { Self::new() } }
+impl Default for ThreadId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+impl Default for RunId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+impl Default for MessageId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+impl Default for InterruptId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
-impl fmt::Display for ThreadId  { fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result { f.write_str(&self.0) } }
-impl fmt::Display for RunId     { fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result { f.write_str(&self.0) } }
-impl fmt::Display for MessageId { fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result { f.write_str(&self.0) } }
-impl fmt::Display for InterruptId { fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result { f.write_str(&self.0) } }
+impl fmt::Display for ThreadId {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+impl fmt::Display for RunId {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+impl fmt::Display for MessageId {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+impl fmt::Display for InterruptId {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
 
 // ── Multimodal Content ────────────────────────────────────────────────────────
 
@@ -58,14 +98,22 @@ pub enum Content {
 }
 
 impl Content {
-    pub fn text(s: impl Into<String>) -> Self { Content::Text(s.into()) }
-    pub fn parts(parts: Vec<ContentPart>) -> Self { Content::Parts(parts) }
+    pub fn text(s: impl Into<String>) -> Self {
+        Content::Text(s.into())
+    }
+    pub fn parts(parts: Vec<ContentPart>) -> Self {
+        Content::Parts(parts)
+    }
 
     pub fn text_content(&self) -> String {
         match self {
             Content::Text(s) => s.clone(),
-            Content::Parts(parts) => parts.iter()
-                .filter_map(|p| match p { ContentPart::Text { text } => Some(text.as_str()), _ => None })
+            Content::Parts(parts) => parts
+                .iter()
+                .filter_map(|p| match p {
+                    ContentPart::Text { text } => Some(text.as_str()),
+                    _ => None,
+                })
                 .collect::<Vec<_>>()
                 .join(""),
         }
@@ -107,11 +155,17 @@ impl ContentPart {
     }
     pub fn image_url(url: impl Into<String>) -> Self {
         ContentPart::ImageUrl {
-            image_url: ImageUrlDetail { url: url.into(), detail: None },
+            image_url: ImageUrlDetail {
+                url: url.into(),
+                detail: None,
+            },
         }
     }
     pub fn image_base64(media_type: impl Into<String>, data: impl Into<String>) -> Self {
-        ContentPart::ImageBase64 { media_type: media_type.into(), data: data.into() }
+        ContentPart::ImageBase64 {
+            media_type: media_type.into(),
+            data: data.into(),
+        }
     }
 }
 
@@ -181,7 +235,10 @@ impl Message {
         }
     }
 
-    pub fn assistant_with_tool_calls(text: impl Into<String>, tool_calls: Vec<ToolCallMessage>) -> Self {
+    pub fn assistant_with_tool_calls(
+        text: impl Into<String>,
+        tool_calls: Vec<ToolCallMessage>,
+    ) -> Self {
         Self {
             id: MessageId::new(),
             role: Role::Assistant,
@@ -231,6 +288,11 @@ pub struct FunctionCall {
 use crate::tool::ToolDefinition;
 
 #[derive(Debug, Clone, Serialize)]
+pub struct StreamOptions {
+    pub include_usage: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct ChatRequest {
     pub model: String,
     pub messages: Vec<Message>,
@@ -242,15 +304,31 @@ pub struct ChatRequest {
     pub max_tokens: Option<u32>,
     pub stream: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub stream_options: Option<StreamOptions>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone)]
 pub enum ChatResponseChunk {
-    Delta { content: String, role: Option<Role> },
-    ToolCallStart { index: usize, id: String, name: String },
-    ToolCallDelta { index: usize, arguments_delta: String },
-    Usage { prompt_tokens: u32, completion_tokens: u32, total_tokens: u32 },
+    Delta {
+        content: String,
+        role: Option<Role>,
+    },
+    ToolCallStart {
+        index: usize,
+        id: String,
+        name: String,
+    },
+    ToolCallDelta {
+        index: usize,
+        arguments_delta: String,
+    },
+    Usage {
+        prompt_tokens: u32,
+        completion_tokens: u32,
+        total_tokens: u32,
+    },
     Done,
 }
 
@@ -267,17 +345,52 @@ pub enum AgentEvent {
         metadata: Option<serde_json::Value>,
     },
     TextDelta(String),
-    ToolCallStart { id: String, name: String },
-    ToolCallArgumentsDelta { id: String, delta: String },
-    ToolDelta { id: String, name: String, delta: String },
-    ToolResult { id: String, name: String, result: String },
+    ToolCallStart {
+        id: String,
+        name: String,
+    },
+    ToolCallArgumentsDelta {
+        id: String,
+        delta: String,
+    },
+    ToolDelta {
+        id: String,
+        name: String,
+        delta: String,
+    },
+    ToolResult {
+        id: String,
+        name: String,
+        result: String,
+    },
     Interrupt {
         interrupts: Vec<InterruptInfo>,
     },
-    TurnStart { turn: usize },
-    Usage { prompt_tokens: u32, completion_tokens: u32 },
+    TurnStart {
+        turn: usize,
+    },
+    Usage {
+        prompt_tokens: u32,
+        completion_tokens: u32,
+    },
     Done,
     Error(AgentError),
+    /// New messages appended to agent state during this step.
+    /// Emitted by the agent loop so outer memory layers can persist them.
+    /// Filtered out by `BuiltAgent` before reaching the consumer.
+    NewMessages(Vec<Message>),
+    /// Tool calls that the inner agent loop cannot execute (not in its registry).
+    /// The outer layer should execute these externally, then resume via
+    /// `AgentLoop::run(state, Action::ToolResults(all_outcomes), false)`.
+    ///
+    /// `completed_results` contains outcomes of tools that **were** executed
+    /// internally by this loop. The outer layer must merge its own results
+    /// with these before resuming.
+    NeedToolExecution {
+        state: crate::state::AgentState,
+        tool_calls: Vec<ParsedToolCall>,
+        completed_results: Vec<ToolCallOutcome>,
+    },
 }
 
 /// 单个中断的详情
@@ -300,7 +413,7 @@ pub struct ResumePayload {
 // ── Internal loop types (pub(crate)) ─────────────────────────────────────────
 
 /// Parsed and fully accumulated tool call ready for execution
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ParsedToolCall {
     pub id: String,
     pub name: String,
@@ -308,9 +421,237 @@ pub struct ParsedToolCall {
 }
 
 /// Single tool call execution result
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolCallResult {
     pub id: String,
     pub name: String,
     pub result: String,
+}
+
+/// Outcome of executing a tool externally — fed back into [`step()`](crate::state::step)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum ToolCallOutcome {
+    /// Tool executed successfully
+    Result {
+        tool_call_id: String,
+        tool_name: String,
+        result: String,
+    },
+    /// Tool execution failed
+    Error {
+        tool_call_id: String,
+        tool_name: String,
+        error: String,
+    },
+}
+
+// ── LoopInput ─────────────────────────────────────────────────────────────────
+
+/// Unified input for `Agent::chat()` — used by `AgentLoop`, composable layers,
+/// and the protocol/transport layer.
+///
+/// Merges the previous `LoopInput` and `ProtocolRequest` into a single
+/// serialisable type that supports:
+/// - Starting a new turn with text or multimodal content
+/// - Resuming after `NeedToolExecution`
+/// - Protocol-level overrides (model, temperature, max_tokens, metadata)
+///
+/// ```ignore
+/// // Start a new conversation (String converts automatically):
+/// agent.chat("hello".into()).await?;
+///
+/// // Start with multimodal content:
+/// agent.chat(Content::parts(vec![
+///     ContentPart::text("describe this image"),
+///     ContentPart::image_url("https://example.com/img.png"),
+/// ]).into()).await?;
+///
+/// // Start with history + extra tool definitions + overrides:
+/// agent.chat(
+///     LoopInput::start("hello")
+///         .history(msgs)
+///         .extra_tools(defs)
+///         .model("gpt-4o")
+///         .temperature(0.5)
+/// ).await?;
+///
+/// // Resume after NeedToolExecution:
+/// agent.chat(LoopInput::resume(state, outcomes)).await?;
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum LoopInput {
+    /// Start a new conversation turn
+    #[serde(rename = "start")]
+    Start {
+        /// User message content — text or multimodal
+        content: Content,
+        /// Conversation history from prior turns
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        history: Vec<Message>,
+        /// Additional tool definitions injected by outer layers
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        extra_tools: Vec<crate::tool::ToolDefinition>,
+        /// Override model name for this request
+        #[serde(skip_serializing_if = "Option::is_none")]
+        model: Option<String>,
+        /// Override temperature for this request
+        #[serde(skip_serializing_if = "Option::is_none")]
+        temperature: Option<f64>,
+        /// Override max tokens for this request
+        #[serde(skip_serializing_if = "Option::is_none")]
+        max_tokens: Option<u32>,
+        /// Request metadata
+        #[serde(skip_serializing_if = "Option::is_none")]
+        metadata: Option<serde_json::Value>,
+    },
+    /// Resume from a `NeedToolExecution` with completed tool results
+    #[serde(rename = "resume")]
+    Resume {
+        state: crate::state::AgentState,
+        results: Vec<ToolCallOutcome>,
+    },
+}
+
+impl LoopInput {
+    /// Create a `Start` input with a text message.
+    pub fn start(msg: impl Into<String>) -> Self {
+        Self::Start {
+            content: Content::text(msg),
+            history: vec![],
+            extra_tools: vec![],
+            model: None,
+            temperature: None,
+            max_tokens: None,
+            metadata: None,
+        }
+    }
+
+    /// Create a `Start` input with multimodal content.
+    pub fn start_content(content: Content) -> Self {
+        Self::Start {
+            content,
+            history: vec![],
+            extra_tools: vec![],
+            model: None,
+            temperature: None,
+            max_tokens: None,
+            metadata: None,
+        }
+    }
+
+    /// Create a `Resume` input from state + tool results.
+    pub fn resume(state: crate::state::AgentState, results: Vec<ToolCallOutcome>) -> Self {
+        Self::Resume { state, results }
+    }
+
+    /// Builder: attach conversation history (only applies to `Start`).
+    pub fn history(mut self, msgs: Vec<Message>) -> Self {
+        if let Self::Start { history, .. } = &mut self {
+            *history = msgs;
+        }
+        self
+    }
+
+    /// Builder: attach extra tool definitions (only applies to `Start`).
+    pub fn extra_tools(mut self, defs: Vec<crate::tool::ToolDefinition>) -> Self {
+        if let Self::Start { extra_tools, .. } = &mut self {
+            *extra_tools = defs;
+        }
+        self
+    }
+
+    /// Builder: override model name (only applies to `Start`).
+    pub fn model(mut self, m: impl Into<String>) -> Self {
+        if let Self::Start { model, .. } = &mut self {
+            *model = Some(m.into());
+        }
+        self
+    }
+
+    /// Builder: override temperature (only applies to `Start`).
+    pub fn temperature(mut self, t: f64) -> Self {
+        if let Self::Start { temperature, .. } = &mut self {
+            *temperature = Some(t);
+        }
+        self
+    }
+
+    /// Builder: override max tokens (only applies to `Start`).
+    pub fn max_tokens(mut self, n: u32) -> Self {
+        if let Self::Start { max_tokens, .. } = &mut self {
+            *max_tokens = Some(n);
+        }
+        self
+    }
+
+    /// Builder: set metadata (only applies to `Start`).
+    pub fn metadata(mut self, v: serde_json::Value) -> Self {
+        if let Self::Start { metadata, .. } = &mut self {
+            *metadata = Some(v);
+        }
+        self
+    }
+}
+
+impl From<String> for LoopInput {
+    fn from(s: String) -> Self {
+        Self::start(s)
+    }
+}
+
+impl From<&str> for LoopInput {
+    fn from(s: &str) -> Self {
+        Self::start(s)
+    }
+}
+
+impl From<Content> for LoopInput {
+    fn from(c: Content) -> Self {
+        Self::start_content(c)
+    }
+}
+
+// ── ChatInput ─────────────────────────────────────────────────────────────────
+
+/// Unified input for `chat_in_thread` — covers both new messages and resume from interrupt.
+///
+/// ```ignore
+/// // New user message (String converts automatically):
+/// agent.chat_in_thread(&tid, "hello").await?;
+///
+/// // Resume from interrupt:
+/// agent.chat_in_thread(&tid, ChatInput::Resume {
+///     run_id,
+///     completed_results: vec![],
+///     pending_interrupts: interrupts,
+///     payloads: vec![payload],
+/// }).await?;
+/// ```
+#[derive(Debug, Clone)]
+pub enum ChatInput {
+    /// A new user message
+    Message(String),
+    /// Resume a previously interrupted run
+    Resume {
+        run_id: RunId,
+        /// Tool calls that completed normally (before the interrupt)
+        completed_results: Vec<ToolCallResult>,
+        /// The interrupt(s) that were returned by the agent
+        pending_interrupts: Vec<InterruptInfo>,
+        /// User-provided payloads resolving each interrupt
+        payloads: Vec<ResumePayload>,
+    },
+}
+
+impl From<String> for ChatInput {
+    fn from(s: String) -> Self {
+        ChatInput::Message(s)
+    }
+}
+
+impl From<&str> for ChatInput {
+    fn from(s: &str) -> Self {
+        ChatInput::Message(s.to_string())
+    }
 }

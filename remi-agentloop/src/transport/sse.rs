@@ -14,6 +14,7 @@ pub fn encode_sse_event(event: &ProtocolEvent) -> String {
         ProtocolEvent::Usage { .. }      => "usage",
         ProtocolEvent::Error { .. }      => "error",
         ProtocolEvent::Done              => "done",
+        ProtocolEvent::NeedToolExecution { .. } => "need_tool_execution",
     };
     let data = serde_json::to_string(event).unwrap_or_default();
     format!("event: {event_type}\ndata: {data}\n\n")

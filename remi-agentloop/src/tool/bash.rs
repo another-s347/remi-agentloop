@@ -1,7 +1,8 @@
 use async_stream::stream;
 use futures::Stream;
 use crate::error::AgentError;
-use crate::tool::{Tool, ToolOutput, ToolResult};
+use crate::tool::{Tool, ToolContext, ToolOutput, ToolResult};
+use crate::types::ResumePayload;
 
 /// Executes shell commands (bash -c)
 pub struct BashTool;
@@ -20,7 +21,7 @@ impl Tool for BashTool {
         })
     }
 
-    fn execute(&self, arguments: serde_json::Value) -> impl std::future::Future<Output = Result<ToolResult<impl Stream<Item = ToolOutput>>, AgentError>> {
+    fn execute(&self, arguments: serde_json::Value, _resume: Option<ResumePayload>, _ctx: &ToolContext) -> impl std::future::Future<Output = Result<ToolResult<impl Stream<Item = ToolOutput>>, AgentError>> {
         async move {
             let command = arguments["command"].as_str()
                 .ok_or_else(|| AgentError::tool("bash", "missing 'command' argument"))?

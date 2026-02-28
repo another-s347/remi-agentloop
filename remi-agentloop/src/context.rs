@@ -1,4 +1,6 @@
 use std::future::Future;
+use std::rc::Rc;
+use std::sync::Arc;
 use crate::error::AgentError;
 use crate::types::{Message, MessageId, RunId, ThreadId};
 
@@ -82,7 +84,7 @@ impl ContextStore for NoStore {
 // ── InMemoryStore ─────────────────────────────────────────────────────────────
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 
 #[derive(Debug, Default, Clone)]
 pub struct InMemoryStore {
@@ -184,3 +186,95 @@ impl ContextStore for InMemoryStore {
         }
     }
 }
+
+// ── Rc<S> blanket impl — enables shared store for Sub-Agent pattern ──────────
+
+impl<S: ContextStore> ContextStore for Rc<S> {
+    fn create_thread(&self) -> impl Future<Output = Result<ThreadId, AgentError>> {
+        (**self).create_thread()
+    }
+    fn get_messages(&self, thread_id: &ThreadId) -> impl Future<Output = Result<Vec<Message>, AgentError>> {
+        (**self).get_messages(thread_id)
+    }
+    fn get_recent_messages(&self, thread_id: &ThreadId, limit: usize) -> impl Future<Output = Result<Vec<Message>, AgentError>> {
+        (**self).get_recent_messages(thread_id, limit)
+    }
+    fn append_message(&self, thread_id: &ThreadId, message: Message) -> impl Future<Output = Result<MessageId, AgentError>> {
+        (**self).append_message(thread_id, message)
+    }
+    fn append_messages(&self, thread_id: &ThreadId, messages: Vec<Message>) -> impl Future<Output = Result<Vec<MessageId>, AgentError>> {
+        (**self).append_messages(thread_id, messages)
+    }
+    fn delete_thread(&self, thread_id: &ThreadId) -> impl Future<Output = Result<(), AgentError>> {
+        (**self).delete_thread(thread_id)
+    }
+    fn create_run(&self, thread_id: &ThreadId) -> impl Future<Output = Result<RunId, AgentError>> {
+        (**self).create_run(thread_id)
+    }
+    fn complete_run(&self, run_id: &RunId) -> impl Future<Output = Result<(), AgentError>> {
+        (**self).complete_run(run_id)
+    }
+}
+
+// ── Arc<S> blanket impl — enables shared store across Send boundaries ────────
+
+impl<S: ContextStore> ContextStore for Arc<S> {
+    fn create_thread(&self) -> impl Future<Output = Result<ThreadId, AgentError>> {
+        (**self).create_thread()
+    }
+    fn get_messages(&self, thread_id: &ThreadId) -> impl Future<Output = Result<Vec<Message>, AgentError>> {
+        (**self).get_messages(thread_id)
+    }
+    fn get_recent_messages(&self, thread_id: &ThreadId, limit: usize) -> impl Future<Output = Result<Vec<Message>, AgentError>> {
+        (**self).get_recent_messages(thread_id, limit)
+    }
+    fn append_message(&self, thread_id: &ThreadId, message: Message) -> impl Future<Output = Result<MessageId, AgentError>> {
+        (**self).append_message(thread_id, message)
+    }
+    fn append_messages(&self, thread_id: &ThreadId, messages: Vec<Message>) -> impl Future<Output = Result<Vec<MessageId>, AgentError>> {
+        (**self).append_messages(thread_id, messages)
+    }
+    fn delete_thread(&self, thread_id: &ThreadId) -> impl Future<Output = Result<(), AgentError>> {
+        (**self).delete_thread(thread_id)
+    }
+    fn create_run(&self, thread_id: &ThreadId) -> impl Future<Output = Result<RunId, AgentError>> {
+        (**self).create_run(thread_id)
+    }
+    fn complete_run(&self, run_id: &RunId) -> impl Future<Output = Result<(), AgentError>> {
+        (**self).complete_run(run_id)
+    }
+}
+
+// ── ContextStoreExt — convenience methods ────────────────────────────────────
+
+/// Extension trait for [`ContextStore`] — provides convenience methods
+/// like conversation forking.
+pub trait ContextStoreExt: ContextStore {
+    /// Fork a thread — copy messages up to (and including) `up_to_message`
+    /// into a new thread.
+    ///
+    /// The new thread shares history up to the fork point and then evolves
+    /// independently. Each copied message gets a fresh [`MessageId`].
+    fn fork_thread(
+        &self,
+        source: &ThreadId,
+        up_to_message: &MessageId,
+    ) -> impl Future<Output = Result<ThreadId, AgentError>> {
+        async {
+            let messages = self.get_messages(source).await?;
+            let idx = messages.iter()
+                .position(|m| m.id == *up_to_message)
+                .ok_or(AgentError::MessageNotFound(up_to_message.clone()))?;
+            let forked: Vec<Message> = messages[..=idx]
+                .iter()
+                .map(|m| Message { id: MessageId::new(), ..m.clone() })
+                .collect();
+            let new_thread = self.create_thread().await?;
+            self.append_messages(&new_thread, forked).await?;
+            Ok(new_thread)
+        }
+    }
+}
+
+// blanket impl — every ContextStore gets ContextStoreExt for free
+impl<S: ContextStore> ContextStoreExt for S {}

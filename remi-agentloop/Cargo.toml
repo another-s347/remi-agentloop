@@ -37,12 +37,26 @@ axum = { workspace = true, optional = true }
 
 ratatui = { workspace = true, optional = true }
 crossterm = { workspace = true, optional = true }
+base64 = { workspace = true }
 
 [[bin]]
 name = "remi-tui"
 path = "src/bin/remi-tui.rs"
 required-features = ["tui"]
 
+[[bin]]
+name = "remi-cli"
+path = "src/bin/remi-cli.rs"
+required-features = ["http-client"]
+
 [[example]]
 name = "calculator_agent"
+required-features = ["http-client"]
+
+[[example]]
+name = "composable_calculator"
+required-features = ["http-client"]
+
+[[example]]
+name = "multimodal_image"
 required-features = ["http-client"]

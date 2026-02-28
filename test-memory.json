@@ -1,0 +1,251 @@
+{
+  "threads": {
+    "1cca86e5-6681-4df2-8cfc-251defee2d7f": [
+      {
+        "id": "b312e3fd-1131-43ef-9504-d119ae47d74f",
+        "role": "user",
+        "content": "What is 3 + 7?"
+      },
+      {
+        "id": "28db09ef-8ea2-4711-b628-1ffb013d2911",
+        "role": "assistant",
+        "content": "I'll calculate 3 + 7 using the addition tool.The result of 3 + 7 is **10**."
+      }
+    ],
+    "e5a72055-a225-4554-9cf4-e6f01012f37f": [
+      {
+        "id": "5df38c34-52c0-4f65-8e08-5a1f0ea36542",
+        "role": "user",
+        "content": "Say hello in one word"
+      },
+      {
+        "id": "4c2b581a-73c9-4fd6-be9a-a7f424eea9c7",
+        "role": "assistant",
+        "content": "Hello"
+      }
+    ],
+    "759ac97d-0418-4eeb-87e1-90eff559582c": [
+      {
+        "id": "f27e1a6e-85e1-4d29-a703-9d4d3316b0a4",
+        "role": "user",
+        "content": "Say hi"
+      },
+      {
+        "id": "332b5046-f4e0-45d1-9474-2675193c43cb",
+        "role": "assistant",
+        "content": "Hi!"
+      }
+    ],
+    "c438ea83-55cd-4ba6-b162-05dd8c4954dd": [
+      {
+        "id": "b72781e9-8a46-4aa9-9404-c62e225455b6",
+        "role": "user",
+        "content": "Compute 5 + 8 using the add tool."
+      },
+      {
+        "id": "ba396b05-1c4a-4aeb-85f0-6f6c053dcea9",
+        "role": "assistant",
+        "content": "I'll use the add tool to compute 5 + 8 for you.",
+        "tool_calls": [
+          {
+            "id": "add:0",
+            "type": "function",
+            "function": {
+              "name": "add",
+              "arguments": "{\"a\": 5, \"b\": 8}"
+            }
+          }
+        ]
+      },
+      {
+        "id": "95f79955-59d2-4d3c-a78a-0eb8061616be",
+        "role": "tool",
+        "content": "13",
+        "tool_call_id": "add:0"
+      },
+      {
+        "id": "a2aae5cd-642c-46fb-9176-2609eb0caff7",
+        "role": "assistant",
+        "content": "The result of 5 + 8 is 13."
+      }
+    ],
+    "7bcae892-359d-4b99-b26a-3ff021b067a2": [
+      {
+        "id": "c435e334-8c41-4c3e-b49e-ebbaeea18fed",
+        "role": "user",
+        "content": "What is 3 + 4? You must use the add tool."
+      },
+      {
+        "id": "363dea97-2db9-4f0f-8075-0b3c12c52f8a",
+        "role": "assistant",
+        "content": "I'll use the add tool to calculate 3 + 4.",
+        "tool_calls": [
+          {
+            "id": "add:0",
+            "type": "function",
+            "function": {
+              "name": "add",
+              "arguments": "{\"a\": 3, \"b\": 4}"
+            }
+          }
+        ]
+      },
+      {
+        "id": "42796bf2-b769-45db-b3d3-fa05ddb2478b",
+        "role": "tool",
+        "content": "7",
+        "tool_call_id": "add:0"
+      },
+      {
+        "id": "f1f9d613-153d-4b71-89fd-b8b3c3cf2375",
+        "role": "assistant",
+        "content": "The result of 3 + 4 is **7**."
+      }
+    ],
+    "865a4bbf-4d84-4907-aadf-ac965e7c32f2": [
+      {
+        "id": "ff8f4f1a-e195-4e9b-972c-5a85c7e09045",
+        "role": "user",
+        "content": "What is 2+2? Reply in one sentence."
+      },
+      {
+        "id": "7aa34d7f-63bd-497a-983f-88b38f6450de",
+        "role": "assistant",
+        "content": "2 + 2 equals 4."
+      },
+      {
+        "id": "90014911-0fdb-497e-b653-4016bdc4efa9",
+        "role": "user",
+        "content": "What did I just ask you? And what was your answer?"
+      },
+      {
+        "id": "f3ecdd66-4a09-49ee-85f9-1a3168c23388",
+        "role": "assistant",
+        "content": "You asked what 2 + 2 is, and I replied that it equals 4."
+      }
+    ],
+    "fed5f5b2-84a1-4aaf-9657-2d99c1d2333d": [
+      {
+        "id": "5f65a95a-32cf-4999-8aff-1c724a3eeded",
+        "role": "user",
+        "content": "Hello, what is your name?"
+      },
+      {
+        "id": "77720e06-f53f-4e8b-8fba-8b62fcf33ccd",
+        "role": "assistant",
+        "content": "My name is Kimi."
+      }
+    ],
+    "4f668790-77c9-412c-854e-aeecd280011d": [
+      {
+        "id": "90e59c36-6bcb-4bce-99e4-264c82632694",
+        "role": "user",
+        "content": "Compute (3+7) * 2^4. Use tools step by step."
+      },
+      {
+        "id": "b880919d-9828-4250-8804-9e2fc23ce5bd",
+        "role": "assistant",
+        "content": "I'll compute this step by step using the provided tools. The expression is (3+7) * 2^4.\n\nFirst, let me calculate the addition in the parentheses: 3+7.Now I need to calculate 2^4 (2 to the power of 4):Finally, I'll multiply the results: 10 * 16:Therefore, (3+7) * 2^4 = 160."
+      }
+    ],
+    "64ce0459-e15d-4e67-a27a-c65b0d59e03f": [
+      {
+        "id": "63a35d8f-142e-46e9-8e5d-49a08145bd99",
+        "role": "user",
+        "content": "Hello, what is your name?"
+      },
+      {
+        "id": "a5e15b7b-ce4a-4371-b0c5-147aeea9abb4",
+        "role": "assistant",
+        "content": "My name is Kimi."
+      }
+    ],
+    "a48bb42e-a34b-47c6-87e8-8215d699bd9a": [
+      {
+        "id": "bd9ac585-6d40-4a97-ab71-7bda5ccc3cd0",
+        "role": "user",
+        "content": "What is 5 + 3?"
+      },
+      {
+        "id": "ea65db30-38a6-42e8-be1b-16f0a7f17335",
+        "role": "assistant",
+        "content": "I will calculate 5 + 3 for you.5 + 3 equals 8."
+      }
+    ],
+    "8ff2dc82-6c9b-4fd1-949e-af055c6fd5ab": [
+      {
+        "id": "91286994-4b86-4d85-8f9e-ce5562eddd65",
+        "role": "user",
+        "content": "What is (3 + 7) * 2? Use calculator tools step by step."
+      },
+      {
+        "id": "082eaaeb-234b-4ce1-8ceb-68eb2759bf57",
+        "role": "assistant",
+        "content": "Let's solve step by step:\n\n1. First, add 3 and 7:  \n   3 + 7 = **10**  \n\n2. Next, multiply the result by 2:  \n   10 × 2 = **20**\n\n**Answer: 20**"
+      }
+    ],
+    "7646d273-ca6d-4c92-ac4f-037b73eabaea": [
+      {
+        "id": "eb259784-2947-4fcf-ab23-3ab0debafc6b",
+        "role": "user",
+        "content": "What is 2 * 5?"
+      },
+      {
+        "id": "b5308afa-8878-46ef-9a68-77465e3a6778",
+        "role": "assistant",
+        "content": "I can calculate that for you using the multiplication tool.The answer is **10**."
+      }
+    ]
+  },
+  "meta": {
+    "c438ea83-55cd-4ba6-b162-05dd8c4954dd": {
+      "created_at": "2026-02-28T17:09:34.904757848+00:00",
+      "message_count": 4
+    },
+    "8ff2dc82-6c9b-4fd1-949e-af055c6fd5ab": {
+      "created_at": "2026-02-28T15:34:43.235194542+00:00",
+      "message_count": 2
+    },
+    "4f668790-77c9-412c-854e-aeecd280011d": {
+      "created_at": "2026-02-28T15:37:00.255460269+00:00",
+      "message_count": 2
+    },
+    "759ac97d-0418-4eeb-87e1-90eff559582c": {
+      "created_at": "2026-02-28T16:46:17.639240937+00:00",
+      "message_count": 2
+    },
+    "7646d273-ca6d-4c92-ac4f-037b73eabaea": {
+      "created_at": "2026-02-28T16:01:24.821807663+00:00",
+      "message_count": 2
+    },
+    "e5a72055-a225-4554-9cf4-e6f01012f37f": {
+      "created_at": "2026-02-28T16:44:44.691952516+00:00",
+      "message_count": 2
+    },
+    "64ce0459-e15d-4e67-a27a-c65b0d59e03f": {
+      "created_at": "2026-02-28T15:37:21.809228967+00:00",
+      "message_count": 2
+    },
+    "fed5f5b2-84a1-4aaf-9657-2d99c1d2333d": {
+      "created_at": "2026-02-28T15:40:47.781064505+00:00",
+      "message_count": 2
+    },
+    "865a4bbf-4d84-4907-aadf-ac965e7c32f2": {
+      "created_at": "2026-02-28T15:32:03.321775400+00:00",
+      "message_count": 4
+    },
+    "a48bb42e-a34b-47c6-87e8-8215d699bd9a": {
+      "created_at": "2026-02-28T15:40:59.899226537+00:00",
+      "message_count": 2
+    },
+    "7bcae892-359d-4b99-b26a-3ff021b067a2": {
+      "created_at": "2026-02-28T16:55:02.712492761+00:00",
+      "message_count": 4
+    },
+    "1cca86e5-6681-4df2-8cfc-251defee2d7f": {
+      "created_at": "2026-02-28T15:36:46.301932852+00:00",
+      "message_count": 2
+    }
+  },
+  "runs": {}
+}

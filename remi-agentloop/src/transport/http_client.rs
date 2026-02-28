@@ -4,7 +4,8 @@ use futures::Stream;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 
 use crate::agent::Agent;
-use crate::protocol::{ProtocolEvent, ProtocolError, ProtocolRequest};
+use crate::protocol::{ProtocolEvent, ProtocolError};
+use crate::types::LoopInput;
 use crate::transport::sse::decode_sse_data;
 
 /// HTTP SSE client — connects to a remote Agent service exposing standard protocol
@@ -39,13 +40,13 @@ impl HttpSseClient {
 }
 
 impl Agent for HttpSseClient {
-    type Request = ProtocolRequest;
+    type Request = LoopInput;
     type Response = ProtocolEvent;
     type Error = ProtocolError;
 
     fn chat(
         &self,
-        req: ProtocolRequest,
+        req: LoopInput,
     ) -> impl Future<Output = Result<impl Stream<Item = ProtocolEvent>, ProtocolError>> {
         let client = self.client.clone();
         let endpoint = self.endpoint.clone();

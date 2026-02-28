@@ -3,7 +3,8 @@ use std::sync::{Arc, Mutex};
 use async_stream::stream;
 use futures::Stream;
 use crate::error::AgentError;
-use crate::tool::{Tool, ToolOutput, ToolResult};
+use crate::tool::{Tool, ToolContext, ToolOutput, ToolResult};
+use crate::types::ResumePayload;
 
 /// In-memory virtual filesystem tool
 #[derive(Clone)]
@@ -37,7 +38,7 @@ impl Tool for VirtualFsTool {
         })
     }
 
-    fn execute(&self, arguments: serde_json::Value) -> impl std::future::Future<Output = Result<ToolResult<impl Stream<Item = ToolOutput>>, AgentError>> {
+    fn execute(&self, arguments: serde_json::Value, _resume: Option<ResumePayload>, _ctx: &ToolContext) -> impl std::future::Future<Output = Result<ToolResult<impl Stream<Item = ToolOutput>>, AgentError>> {
         let files = self.files.clone();
         async move {
             let op = arguments["op"].as_str().unwrap_or("").to_string();

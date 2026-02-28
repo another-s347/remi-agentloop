@@ -1,9 +1,11 @@
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::{Arc, RwLock};
 use futures::Stream;
 use serde::{Deserialize, Serialize};
+use crate::config::AgentConfig;
 use crate::error::AgentError;
-use crate::types::InterruptId;
+use crate::types::{InterruptId, ResumePayload, RunId, ThreadId};
 
 // ── ToolOutput ────────────────────────────────────────────────────────────────
 
@@ -14,6 +16,33 @@ pub enum ToolOutput {
     Delta(String),
     /// 工具执行最终结果
     Result(String),
+}
+
+// ── ToolContext ────────────────────────────────────────────────────────────────
+
+/// Tool 执行时的上下文，由 AgentLoop 注入
+#[derive(Debug, Clone)]
+pub struct ToolContext {
+    /// 当前 agent 的运行时配置
+    pub config: AgentConfig,
+    /// 当前 Thread ID（如有）
+    pub thread_id: Option<ThreadId>,
+    /// 当前 Run ID
+    pub run_id: RunId,
+    /// 请求携带的业务自定义 metadata（透传）
+    pub metadata: Option<serde_json::Value>,
+    /// 用户自定义可变状态 — tool 可在执行时读写。
+    ///
+    /// 与 `AgentState.user_state` 同源：`run_loop` 在每批 tool 执行前
+    /// 从 state 注入，执行后回写。用于渐进式披露等跨 tool 通信场景。
+    ///
+    /// # Example
+    /// ```ignore
+    /// // 在 tool execute 中：
+    /// let mut us = ctx.user_state.write().unwrap();
+    /// us["search_done"] = json!(true);
+    /// ```
+    pub user_state: Arc<RwLock<serde_json::Value>>,
 }
 
 // ── InterruptRequest ──────────────────────────────────────────────────────────
@@ -69,9 +98,30 @@ pub trait Tool {
     fn description(&self) -> &str;
     fn parameters_schema(&self) -> serde_json::Value;
 
+    /// 当前 tool 是否启用。
+    ///
+    /// `user_state` 是 `AgentState.user_state` 的快照。
+    /// 返回 `false` 时, registry 不会将此 tool 的 definition 发送给模型,
+    /// 从而实现渐进式披露（progressive disclosure）。
+    ///
+    /// 默认返回 `true` — 始终启用。
+    fn enabled(&self, _user_state: &serde_json::Value) -> bool {
+        true
+    }
+
+    /// Execute the tool.
+    ///
+    /// `resume` is `Some` when this call is resuming from a previous
+    /// [`InterruptRequest`]. The tool should use the payload to complete
+    /// the operation that was interrupted.
+    ///
+    /// `ctx` provides runtime context (config, thread_id, run_id, metadata).
+    /// Tools that don't need context can simply ignore the parameter.
     fn execute(
         &self,
         arguments: serde_json::Value,
+        resume: Option<ResumePayload>,
+        ctx: &ToolContext,
     ) -> impl Future<Output = Result<ToolResult<impl Stream<Item = ToolOutput>>, AgentError>>;
 }
 
@@ -101,23 +151,29 @@ pub(crate) trait DynTool: Send + Sync {
     fn name(&self) -> &str;
     fn description(&self) -> &str;
     fn parameters_schema(&self) -> serde_json::Value;
-    fn execute_boxed(
-        &self,
+    fn enabled(&self, user_state: &serde_json::Value) -> bool;
+    fn execute_boxed<'a>(
+        &'a self,
         arguments: serde_json::Value,
-    ) -> Pin<Box<dyn Future<Output = Result<BoxedToolResult<'_>, AgentError>> + '_>>;
+        resume: Option<ResumePayload>,
+        ctx: &'a ToolContext,
+    ) -> Pin<Box<dyn Future<Output = Result<BoxedToolResult<'a>, AgentError>> + 'a>>;
 }
 
 impl<T: Tool + Send + Sync> DynTool for T {
     fn name(&self) -> &str { Tool::name(self) }
     fn description(&self) -> &str { Tool::description(self) }
     fn parameters_schema(&self) -> serde_json::Value { Tool::parameters_schema(self) }
+    fn enabled(&self, user_state: &serde_json::Value) -> bool { Tool::enabled(self, user_state) }
 
-    fn execute_boxed(
-        &self,
+    fn execute_boxed<'a>(
+        &'a self,
         arguments: serde_json::Value,
-    ) -> Pin<Box<dyn Future<Output = Result<BoxedToolResult<'_>, AgentError>> + '_>> {
+        resume: Option<ResumePayload>,
+        ctx: &'a ToolContext,
+    ) -> Pin<Box<dyn Future<Output = Result<BoxedToolResult<'a>, AgentError>> + 'a>> {
         Box::pin(async move {
-            let result = Tool::execute(self, arguments).await?;
+            let result = Tool::execute(self, arguments, resume, ctx).await?;
             Ok(result.map_stream(|s| -> BoxedToolStream<'_> { Box::pin(s) }))
         })
     }

@@ -41,9 +41,17 @@ async fn main() -> Result<(), AgentError> {
         .expect("OPENAI_API_KEY or REMI_API_KEY must be set");
 
     let model = std::env::var("REMI_MODEL").unwrap_or_else(|_| "gpt-4o".to_string());
+    let base_url = std::env::var("REMI_BASE_URL")
+        .or_else(|_| std::env::var("OPENAI_BASE_URL"))
+        .ok();
+
+    let mut oai = OpenAIClient::new(api_key).with_model(model);
+    if let Some(url) = base_url {
+        oai = oai.with_base_url(url);
+    }
 
     let agent = AgentBuilder::new()
-        .model(OpenAIClient::new(api_key).with_model(model))
+        .model(oai)
         .system("You are a calculator assistant. Use the provided tools to compute results precisely.")
         .tool(Add::new())
         .tool(Multiply::new())
@@ -55,7 +63,7 @@ async fn main() -> Result<(), AgentError> {
     println!("{}", "─".repeat(50));
 
     let stream = agent
-        .chat("What is (3 + 7) * 2^4? Show step-by-step.".to_string())
+        .chat("What is (3 + 7) * 2^4? Show step-by-step.".into())
         .await?;
     let mut stream = std::pin::pin!(stream);
 

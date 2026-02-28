@@ -1,7 +1,8 @@
 use async_stream::stream;
 use futures::Stream;
 use crate::error::AgentError;
-use crate::tool::{Tool, ToolOutput, ToolResult};
+use crate::tool::{Tool, ToolContext, ToolOutput, ToolResult};
+use crate::types::ResumePayload;
 
 /// Read/write files on the physical filesystem
 pub struct FsTool;
@@ -25,7 +26,7 @@ impl Tool for FsTool {
         })
     }
 
-    fn execute(&self, arguments: serde_json::Value) -> impl std::future::Future<Output = Result<ToolResult<impl Stream<Item = ToolOutput>>, AgentError>> {
+    fn execute(&self, arguments: serde_json::Value, _resume: Option<ResumePayload>, _ctx: &ToolContext) -> impl std::future::Future<Output = Result<ToolResult<impl Stream<Item = ToolOutput>>, AgentError>> {
         async move {
             let op = arguments["op"].as_str()
                 .ok_or_else(|| AgentError::tool("fs", "missing 'op'"))?

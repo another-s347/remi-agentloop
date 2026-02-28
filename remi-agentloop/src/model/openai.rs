@@ -1,21 +1,22 @@
-use std::future::Future;
-use futures::Stream;
 #[cfg(feature = "http-client")]
 use async_stream::stream;
+use futures::Stream;
 #[cfg(feature = "http-client")]
 use serde::Deserialize;
+use std::future::Future;
 
 use crate::agent::Agent;
 use crate::config::AgentConfig;
 use crate::error::AgentError;
-use crate::types::{ChatRequest, ChatResponseChunk};
 #[cfg(feature = "http-client")]
 use crate::types::Role;
+use crate::types::{ChatRequest, ChatResponseChunk};
 
 // ── OpenAI wire types (internal, only used with http-client) ─────────────────
 #[cfg(feature = "http-client")]
 #[derive(Debug, Deserialize)]
 struct OAIChatCompletionChunk {
+    #[serde(default)]
     choices: Vec<OAIChoice>,
     usage: Option<OAIUsage>,
 }
@@ -24,6 +25,7 @@ struct OAIChatCompletionChunk {
 #[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 struct OAIChoice {
+    #[serde(default)]
     index: usize,
     delta: OAIDelta,
     finish_reason: Option<String>,
@@ -55,8 +57,11 @@ struct OAIFunctionDelta {
 #[cfg(feature = "http-client")]
 #[derive(Debug, Deserialize)]
 struct OAIUsage {
+    #[serde(default)]
     prompt_tokens: u32,
+    #[serde(alias = "output_tokens", default)]
     completion_tokens: u32,
+    #[serde(default)]
     total_tokens: u32,
 }
 
@@ -85,18 +90,22 @@ impl OpenAIClient {
     }
 
     pub fn with_base_url(mut self, url: impl Into<String>) -> Self {
-        self.base_url = url.into(); self
+        self.base_url = url.into();
+        self
     }
 
     pub fn with_model(mut self, model: impl Into<String>) -> Self {
-        self.model = model.into(); self
+        self.model = model.into();
+        self
     }
 
     pub fn from_config(config: &AgentConfig) -> Self {
         Self {
             #[cfg(feature = "http-client")]
             client: reqwest::Client::new(),
-            base_url: config.base_url.clone()
+            base_url: config
+                .base_url
+                .clone()
                 .unwrap_or_else(|| "https://api.openai.com/v1".into()),
             api_key: config.api_key.clone().unwrap_or_default(),
             model: config.model.clone().unwrap_or_else(|| "gpt-4o".into()),
@@ -126,6 +135,9 @@ impl Agent for OpenAIClient {
                     req.model = model;
                 }
                 req.stream = true;
+                req.stream_options = Some(crate::types::StreamOptions {
+                    include_usage: true,
+                });
 
                 let response = client
                     .post(&url)
@@ -141,9 +153,9 @@ impl Agent for OpenAIClient {
                     return Err(AgentError::model(format!("HTTP {}: {}", status, body)));
                 }
 
-                use tokio_util::io::StreamReader;
-                use tokio::io::AsyncBufReadExt;
                 use futures::TryStreamExt;
+                use tokio::io::AsyncBufReadExt;
+                use tokio_util::io::StreamReader;
 
                 let byte_stream = response
                     .bytes_stream()
@@ -164,8 +176,8 @@ impl Agent for OpenAIClient {
                                 }
                                 if let Some(data) = line.strip_prefix("data: ") {
                                     if data == "[DONE]" {
-                                        yield ChatResponseChunk::Done;
-                                        break;
+                                        // keep reading — some APIs send usage chunk after [DONE]
+                                        continue;
                                     }
                                     match serde_json::from_str::<OAIChatCompletionChunk>(data) {
                                         Err(_) => continue,
@@ -217,6 +229,7 @@ impl Agent for OpenAIClient {
                             }
                         }
                     }
+                    yield ChatResponseChunk::Done;
                 })
             }
         }
@@ -225,9 +238,9 @@ impl Agent for OpenAIClient {
         {
             let _ = req;
             async move {
-                Err::<futures::stream::Empty<ChatResponseChunk>, AgentError>(
-                    AgentError::model("http-client feature not enabled")
-                )
+                Err::<futures::stream::Empty<ChatResponseChunk>, AgentError>(AgentError::model(
+                    "http-client feature not enabled",
+                ))
             }
         }
     }
