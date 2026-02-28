@@ -53,7 +53,9 @@ impl Clone for AgentError {
             #[cfg(feature = "http-client")]
             Self::Http(e) => Self::Other(e.to_string()),
             Self::Json(e) => Self::Other(e.to_string()),
-            Self::SseParse { message } => Self::SseParse { message: message.clone() },
+            Self::SseParse { message } => Self::SseParse {
+                message: message.clone(),
+            },
             Self::ToolExecution { tool_name, message } => Self::ToolExecution {
                 tool_name: tool_name.clone(),
                 message: message.clone(),
@@ -64,7 +66,10 @@ impl Clone for AgentError {
             Self::ThreadNotFound(id) => Self::ThreadNotFound(id.clone()),
             Self::RunNotFound(id) => Self::RunNotFound(id.clone()),
             Self::InterruptNotFound(id) => Self::InterruptNotFound(id.clone()),
-            Self::ResumeIncomplete { expected, got } => Self::ResumeIncomplete { expected: *expected, got: *got },
+            Self::ResumeIncomplete { expected, got } => Self::ResumeIncomplete {
+                expected: *expected,
+                got: *got,
+            },
             Self::Store(s) => Self::Store(s.clone()),
             Self::Io(s) => Self::Io(s.clone()),
             Self::Other(s) => Self::Other(s.clone()),
@@ -74,7 +79,9 @@ impl Clone for AgentError {
 
 impl AgentError {
     pub fn sse_parse(msg: impl Into<String>) -> Self {
-        Self::SseParse { message: msg.into() }
+        Self::SseParse {
+            message: msg.into(),
+        }
     }
 
     pub fn tool(tool_name: impl Into<String>, message: impl Into<String>) -> Self {

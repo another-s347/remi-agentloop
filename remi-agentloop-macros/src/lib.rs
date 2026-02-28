@@ -1,7 +1,7 @@
 use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;
 use quote::quote;
-use syn::{parse_macro_input, ItemFn, FnArg, ReturnType, Type, Pat};
+use syn::{parse_macro_input, FnArg, ItemFn, Pat, ReturnType, Type};
 
 /// `#[tool]` proc-macro: generates a `Tool` impl from an async fn.
 ///
@@ -42,13 +42,12 @@ fn tool_impl(func: ItemFn) -> syn::Result<TokenStream2> {
 
     // Build JSON Schema properties
     let schema_props = build_schema_props(&params);
-    let required_fields: Vec<&str> = params.iter()
-        .map(|(name, _)| name.as_str())
-        .collect();
+    let required_fields: Vec<&str> = params.iter().map(|(name, _)| name.as_str()).collect();
 
     // Build argument extraction in execute()
     let arg_extractions = build_arg_extractions(&params);
-    let arg_idents: Vec<syn::Ident> = params.iter()
+    let arg_idents: Vec<syn::Ident> = params
+        .iter()
         .map(|(name, _)| syn::Ident::new(name, proc_macro2::Span::call_site()))
         .collect();
 
@@ -122,7 +121,11 @@ fn extract_doc_comments(attrs: &[syn::Attribute]) -> String {
     for attr in attrs {
         if attr.path().is_ident("doc") {
             if let syn::Meta::NameValue(nv) = &attr.meta {
-                if let syn::Expr::Lit(syn::ExprLit { lit: syn::Lit::Str(s), .. }) = &nv.value {
+                if let syn::Expr::Lit(syn::ExprLit {
+                    lit: syn::Lit::Str(s),
+                    ..
+                }) = &nv.value
+                {
                     lines.push(s.value().trim().to_string());
                 }
             }
@@ -131,7 +134,9 @@ fn extract_doc_comments(attrs: &[syn::Attribute]) -> String {
     lines.join(" ")
 }
 
-fn extract_params(inputs: &syn::punctuated::Punctuated<FnArg, syn::token::Comma>) -> syn::Result<Vec<(String, String)>> {
+fn extract_params(
+    inputs: &syn::punctuated::Punctuated<FnArg, syn::token::Comma>,
+) -> syn::Result<Vec<(String, String)>> {
     let mut params = Vec::new();
     for input in inputs {
         match input {
@@ -154,7 +159,9 @@ fn type_to_json_schema_type(ty: &Type) -> String {
     let ts = ts.replace(" ", "");
     match ts.as_str() {
         "String" | "&str" => "string".to_string(),
-        "i64" | "i32" | "i16" | "i8" | "u64" | "u32" | "u16" | "u8" | "usize" | "isize" => "integer".to_string(),
+        "i64" | "i32" | "i16" | "i8" | "u64" | "u32" | "u16" | "u8" | "usize" | "isize" => {
+            "integer".to_string()
+        }
         "f64" | "f32" => "number".to_string(),
         "bool" => "boolean".to_string(),
         _ => "string".to_string(),
@@ -162,49 +169,55 @@ fn type_to_json_schema_type(ty: &Type) -> String {
 }
 
 fn build_schema_props(params: &[(String, String)]) -> Vec<TokenStream2> {
-    params.iter().map(|(name, ty)| {
-        quote! {
-            #name: { "type": #ty }
-        }
-    }).collect()
+    params
+        .iter()
+        .map(|(name, ty)| {
+            quote! {
+                #name: { "type": #ty }
+            }
+        })
+        .collect()
 }
 
 fn build_arg_extractions(params: &[(String, String)]) -> Vec<TokenStream2> {
-    params.iter().map(|(name, ty)| {
-        let ident = syn::Ident::new(name, proc_macro2::Span::call_site());
-        let extraction = match ty.as_str() {
-            "integer" => quote! {
-                let #ident: i64 = arguments[#name].as_i64()
-                    .ok_or_else(|| ::remi_agentloop::error::AgentError::ToolExecution {
-                        tool_name: stringify!(#ident).to_string(),
-                        message: format!("missing or invalid integer argument: {}", #name),
-                    })?;
-            },
-            "number" => quote! {
-                let #ident: f64 = arguments[#name].as_f64()
-                    .ok_or_else(|| ::remi_agentloop::error::AgentError::ToolExecution {
-                        tool_name: stringify!(#ident).to_string(),
-                        message: format!("missing or invalid number argument: {}", #name),
-                    })?;
-            },
-            "boolean" => quote! {
-                let #ident: bool = arguments[#name].as_bool()
-                    .ok_or_else(|| ::remi_agentloop::error::AgentError::ToolExecution {
-                        tool_name: stringify!(#ident).to_string(),
-                        message: format!("missing or invalid boolean argument: {}", #name),
-                    })?;
-            },
-            _ => quote! {
-                let #ident: String = arguments[#name].as_str()
-                    .ok_or_else(|| ::remi_agentloop::error::AgentError::ToolExecution {
-                        tool_name: stringify!(#ident).to_string(),
-                        message: format!("missing or invalid string argument: {}", #name),
-                    })?
-                    .to_string();
-            },
-        };
-        extraction
-    }).collect()
+    params
+        .iter()
+        .map(|(name, ty)| {
+            let ident = syn::Ident::new(name, proc_macro2::Span::call_site());
+            let extraction = match ty.as_str() {
+                "integer" => quote! {
+                    let #ident: i64 = arguments[#name].as_i64()
+                        .ok_or_else(|| ::remi_agentloop::error::AgentError::ToolExecution {
+                            tool_name: stringify!(#ident).to_string(),
+                            message: format!("missing or invalid integer argument: {}", #name),
+                        })?;
+                },
+                "number" => quote! {
+                    let #ident: f64 = arguments[#name].as_f64()
+                        .ok_or_else(|| ::remi_agentloop::error::AgentError::ToolExecution {
+                            tool_name: stringify!(#ident).to_string(),
+                            message: format!("missing or invalid number argument: {}", #name),
+                        })?;
+                },
+                "boolean" => quote! {
+                    let #ident: bool = arguments[#name].as_bool()
+                        .ok_or_else(|| ::remi_agentloop::error::AgentError::ToolExecution {
+                            tool_name: stringify!(#ident).to_string(),
+                            message: format!("missing or invalid boolean argument: {}", #name),
+                        })?;
+                },
+                _ => quote! {
+                    let #ident: String = arguments[#name].as_str()
+                        .ok_or_else(|| ::remi_agentloop::error::AgentError::ToolExecution {
+                            tool_name: stringify!(#ident).to_string(),
+                            message: format!("missing or invalid string argument: {}", #name),
+                        })?
+                        .to_string();
+                },
+            };
+            extraction
+        })
+        .collect()
 }
 
 fn to_pascal_case(s: &str) -> String {
