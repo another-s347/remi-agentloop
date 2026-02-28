@@ -14,7 +14,7 @@ tool-bash = []
 tool-fs = []
 tool-fs-virtual = []
 tools = ["tool-bash", "tool-fs"]
-tui = ["dep:ratatui", "dep:crossterm"]
+tui = ["dep:ratatui", "dep:crossterm", "http-client"]
 
 [dependencies]
 remi-agentloop-macros = { path = "../remi-agentloop-macros" }
@@ -42,3 +42,7 @@ crossterm = { workspace = true, optional = true }
 name = "remi-tui"
 path = "src/bin/remi-tui.rs"
 required-features = ["tui"]
+
+[[example]]
+name = "calculator_agent"
+required-features = ["http-client"]

@@ -83,19 +83,19 @@ impl Agent for HttpSseClient {
             let mut lines = reader.lines();
 
             Ok(stream! {
-                let mut current_event: Option<String> = None;
+                let mut _current_event: Option<String> = None;
                 loop {
                     match lines.next_line().await {
                         Err(_) | Ok(None) => break,
                         Ok(Some(line)) => {
                             let line = line.trim().to_string();
                             if line.is_empty() {
-                                current_event = None;
+                                _current_event = None;
                                 continue;
                             }
                             if line.starts_with(':') { continue; }
                             if let Some(event_type) = line.strip_prefix("event: ") {
-                                current_event = Some(event_type.to_string());
+                                _current_event = Some(event_type.to_string());
                                 continue;
                             }
                             if let Some(data) = line.strip_prefix("data: ") {

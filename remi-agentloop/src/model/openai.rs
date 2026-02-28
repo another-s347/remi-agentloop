@@ -1,12 +1,16 @@
 use std::future::Future;
 use futures::Stream;
 #[cfg(feature = "http-client")]
+use async_stream::stream;
+#[cfg(feature = "http-client")]
 use serde::Deserialize;
 
 use crate::agent::Agent;
 use crate::config::AgentConfig;
 use crate::error::AgentError;
 use crate::types::{ChatRequest, ChatResponseChunk};
+#[cfg(feature = "http-client")]
+use crate::types::Role;
 
 // ── OpenAI wire types (internal, only used with http-client) ─────────────────
 #[cfg(feature = "http-client")]
@@ -17,6 +21,7 @@ struct OAIChatCompletionChunk {
 }
 
 #[cfg(feature = "http-client")]
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 struct OAIChoice {
     index: usize,
@@ -144,7 +149,7 @@ impl Agent for OpenAIClient {
                     .bytes_stream()
                     .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e));
                 let reader = StreamReader::new(byte_stream);
-                let mut lines = reader.lines();
+                let lines = reader.lines();
 
                 Ok(stream! {
                     let mut lines = lines;

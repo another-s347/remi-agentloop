@@ -46,10 +46,6 @@ fn tool_impl(func: ItemFn) -> syn::Result<TokenStream2> {
 
     // Build argument extraction in execute()
     let arg_extractions = build_arg_extractions(&params);
-    let arg_idents: Vec<syn::Ident> = params
-        .iter()
-        .map(|(name, _)| syn::Ident::new(name, proc_macro2::Span::call_site()))
-        .collect();
 
     let vis = &func.vis;
     let block = &func.block;
@@ -100,10 +96,7 @@ fn tool_impl(func: ItemFn) -> syn::Result<TokenStream2> {
             > {
                 async move {
                     #(#arg_extractions)*
-                    let result: #ret_type = {
-                        let #(#arg_idents),* = #(#arg_idents),*;
-                        #block
-                    };
+                    let result: #ret_type = { #block };
                     let result_str = result.to_string();
                     Ok(::remi_agentloop::tool::ToolResult::Output(
                         ::async_stream::stream! {
