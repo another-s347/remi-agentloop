@@ -3,41 +3,42 @@ name = "remi-agentloop"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+description = "Facade crate — re-exports remi-core, remi-model, remi-tool, remi-transport"
 
 [features]
 default = ["native"]
-native = ["tokio/full"]
-http-client = ["reqwest/rustls-tls"]
-http-server = ["axum", "tokio/full"]
+native = ["remi-core/native"]
+http-client = [
+    "remi-transport/http-client",
+    "remi-model/http-client",
+    "tokio/full",
+]
+http-server = ["remi-transport/http-server", "tokio/full"]
 tracing-langsmith = ["http-client"]
-tool-bash = []
-tool-fs = []
-tool-fs-virtual = []
-tools = ["tool-bash", "tool-fs"]
+tool-bash = ["remi-tool/tool-bash"]
+tool-bash-virtual = ["remi-tool/tool-bash-virtual"]
+tool-fs = ["remi-tool/tool-fs"]
+tool-fs-virtual = ["remi-tool/tool-fs-virtual"]
+tools = ["remi-tool/tools"]
 tui = ["dep:ratatui", "dep:crossterm", "http-client"]
 
 [dependencies]
+remi-core = { path = "../remi-core" }
+remi-transport = { path = "../remi-transport" }
+remi-model = { path = "../remi-model" }
+remi-tool = { path = "../remi-tool" }
 remi-agentloop-macros = { path = "../remi-agentloop-macros" }
 
 futures = { workspace = true }
 async-stream = { workspace = true }
-pin-project-lite = { workspace = true }
 tokio = { workspace = true, optional = true }
 tokio-stream = { workspace = true }
-
 serde = { workspace = true }
 serde_json = { workspace = true }
-thiserror = { workspace = true }
-uuid = { workspace = true }
 chrono = { workspace = true }
-tokio-util = { workspace = true, features = ["io"] }
-
-reqwest = { workspace = true, optional = true }
-axum = { workspace = true, optional = true }
 
 ratatui = { workspace = true, optional = true }
 crossterm = { workspace = true, optional = true }
-base64 = { workspace = true }
 
 [[bin]]
 name = "remi-tui"
@@ -59,4 +60,8 @@ required-features = ["http-client"]
 
 [[example]]
 name = "multimodal_image"
+required-features = ["http-client"]
+
+[[example]]
+name = "step_external_tools"
 required-features = ["http-client"]

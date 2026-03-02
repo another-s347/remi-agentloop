@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <title>Composable Calculator Agent — Browser WASM</title>
+  <style>
+    body {
+      font-family: monospace;
+      max-width: 800px;
+      margin: 40px auto;
+      background: #1e1e2e;
+      color: #cdd6f4;
+    }
+
+    h1 {
+      color: #89b4fa;
+    }
+
+    #output {
+      white-space: pre-wrap;
+      background: #313244;
+      padding: 16px;
+      border-radius: 8px;
+      min-height: 200px;
+    }
+
+    input,
+    button {
+      font-family: monospace;
+      font-size: 14px;
+      padding: 8px 12px;
+    }
+
+    input {
+      width: 400px;
+      background: #313244;
+      color: #cdd6f4;
+      border: 1px solid #585b70;
+      border-radius: 4px;
+    }
+
+    button {
+      background: #89b4fa;
+      color: #1e1e2e;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+    }
+
+    button:hover {
+      background: #74c7ec;
+    }
+
+    .tool {
+      color: #a6e3a1;
+    }
+
+    .error {
+      color: #f38ba8;
+    }
+
+    .delta {
+      color: #cdd6f4;
+    }
+
+    .info {
+      color: #585b70;
+    }
+  </style>
+</head>
+
+<body>
+  <h1>🧮 Calculator Agent (Browser WASM)</h1>
+  <p class="info">Same Rust agent code compiled to wasm32-unknown-unknown, HTTP via browser fetch()</p>
+  <div>
+    <input id="expr" value="What is (12 + 8) * 3 / 4?" placeholder="Enter math expression..." />
+    <button onclick="run()">Run</button>
+  </div>
+  <br>
+  <div id="output">Ready.</div>
+
+  <script type="module">
+    import init, { chat } from './pkg/composable_calculator_browser.js';
+
+    let initialized = false;
+
+    window.run = async function () {
+      const output = document.getElementById('output');
+      const expr = document.getElementById('expr').value;
+      output.textContent = 'Initializing WASM...\n';
+
+      if (!initialized) {
+        await init();
+        initialized = true;
+      }
+
+      output.textContent = `Query: ${expr}\n${'─'.repeat(40)}\n`;
+
+      const input = JSON.stringify({
+        type: 'start',
+        content: expr,
+        metadata: {
+          api_key: 'sk-XD8MNSg1SQtlOW5dPify6dKtoKghyKe9kyTABMXpOZ079C3T',
+          base_url: '/api',  // proxied through serve.py to avoid CORS
+          model: 'moonshot-v1-8k',
+        },
+      });
+
+      try {
+        const stream = chat(input);
+        let count = 0;
+
+        while (true) {
+          const ev = await stream.next();
+          if (ev === undefined) break;
+          count++;
+
+          const event = JSON.parse(ev);
+          switch (event.type) {
+            case 'delta':
+              output.textContent += event.content;
+              break;
+            case 'tool_call_start':
+              for (const tc of (event.tool_calls || [])) {
+                output.textContent += `\n[tool] ${tc.name}(${JSON.stringify(tc.arguments)})\n`;
+              }
+              break;
+            case 'tool_result':
+              for (const r of (event.results || [])) {
+                const result = r.Result?.result ?? JSON.stringify(r);
+                output.textContent += `[result] → ${result}\n`;
+              }
+              break;
+            case 'tool_call_delta':
+              // streaming tool args — skip for brevity
+              break;
+            case 'done':
+              output.textContent += `\n${'─'.repeat(40)}\nDone (${count} events)`;
+              break;
+            case 'error':
+              output.textContent += `\n[ERROR] ${event.message}\n`;
+              break;
+          }
+        }
+
+        stream.free();
+      } catch (e) {
+        output.textContent += `\n[ERROR] ${e}\n`;
+      }
+    };
+  </script>
+</body>
+
+</html>

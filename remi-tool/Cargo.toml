@@ -1,0 +1,24 @@
+[package]
+name = "remi-tool"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Built-in tool implementations (bash, filesystem) for the remi agent framework"
+
+[features]
+default = []
+tool-bash = ["tokio/process"]
+tool-bash-virtual = ["dep:bashkit"]
+tool-fs = ["tokio/fs"]
+tool-fs-virtual = []
+tools = ["tool-bash", "tool-fs"]
+
+[dependencies]
+remi-core = { path = "../remi-core" }
+
+futures = { workspace = true }
+async-stream = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true, optional = true }
+bashkit = { version = "0.1", optional = true }

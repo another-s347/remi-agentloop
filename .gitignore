@@ -1,5 +1,16 @@
 # Rust build artifacts
 /target/
+**/target/
+
+# wasm-pack output
+**/pkg/
+
+# Build output
+/dist/
+
+# Generated WASM artifacts (jco transpile output, etc.)
+/browser-demo/
+/browser-llm-demo/
 
 # Editor / IDE
 .idea/
@@ -12,8 +23,18 @@
 .env
 .env.*
 
+# Node
+node_modules/
+
+# Python
+__pycache__/
+*.pyc
+
 # macOS
 .DS_Store
 
 # Flycheck (Emacs)
 flycheck0/
+
+# Test / scratch files
+test-memory.json

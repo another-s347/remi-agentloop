@@ -1,0 +1,14 @@
+[package]
+name = "remi-agentloop-guest"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Guest SDK for building WASM agents compatible with remi-agentloop (WIT + Component Model)"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+wit-bindgen = { workspace = true }
+# Used by export_agent! to drive async futures synchronously in WASM.
+# The `executor` feature is pure-Rust and wasm32-compatible.
+futures = { workspace = true }

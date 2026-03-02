@@ -1,0 +1,13 @@
+[package]
+name = "wasm-calculator-guest"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+remi-agentloop-guest = { path = "../../remi-agentloop-guest" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+wit-bindgen = "0.53"

@@ -1,0 +1,30 @@
+[package]
+name = "composable-calculator-browser"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+composable-calculator-agent = { path = "../composable-calculator-agent" }
+remi-agentloop = { path = "../../remi-agentloop", default-features = false }
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+web-sys = { version = "0.3", features = [
+    "Headers",
+    "Request",
+    "RequestInit",
+    "RequestMode",
+    "Response",
+    "Window",
+    "ReadableStream",
+    "ReadableStreamDefaultReader",
+] }
+futures = "0.3"
+async-stream = "0.3"
+serde_json = "1"
+uuid = { version = "1", features = ["v4", "js"] }
+getrandom = { version = "0.3", features = ["wasm_js"] }
+console_error_panic_hook = "0.1"

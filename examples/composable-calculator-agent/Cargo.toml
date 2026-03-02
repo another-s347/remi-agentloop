@@ -1,0 +1,11 @@
+[package]
+name = "composable-calculator-agent"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+remi-agentloop = { path = "../../remi-agentloop", default-features = false }
+remi-agentloop-macros = { path = "../../remi-agentloop-macros" }
+async-stream = "0.3"
+futures = "0.3"
+serde_json = "1"

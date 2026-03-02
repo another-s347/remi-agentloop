@@ -1,65 +1,58 @@
-// ── Re-exports ────────────────────────────────────────────────────────────────
+//! Facade crate — re-exports everything from the remi sub-crates.
+//!
+//! Users can depend on `remi-agentloop` to get the full framework,
+//! or depend on individual sub-crates (`remi-core`, `remi-model`,
+//! `remi-tool`, `remi-transport`) for finer-grained control.
+
+// ── Re-exports from remi-core ─────────────────────────────────────────────────
 
 pub use remi_agentloop_macros::tool as tool_macro;
 
-// Core
-pub mod agent;
-pub mod config;
-pub mod context;
-pub mod error;
-pub mod interrupt;
-pub mod protocol;
-pub mod types;
-pub mod union;
+pub use remi_core::{
+    agent, adapters, agent_loop, builder, checkpoint, config, context,
+    error, interrupt, model, protocol, state, tool, tracing, types, union,
+};
 
-// Model
-pub mod model;
+// ── Re-exports from remi-transport ────────────────────────────────────────────
 
-// Tool system
-pub mod tool;
+/// HTTP transport abstraction (HttpTransport trait, ReqwestTransport, SSE)
+pub mod transport {
+    pub use remi_transport::*;
+}
 
-// Adapters
-pub mod adapters;
+/// HTTP transport abstraction — re-exported module
+pub mod http {
+    pub use remi_transport::http::*;
+}
 
-// Step function & AgentState
-pub mod state;
+// ── Re-exports from remi-model ────────────────────────────────────────────────
 
-// Agent loop (composable step + tool execution core)
-pub mod agent_loop;
-
-// Builder
-pub mod builder;
-
-// Tracing
-pub mod tracing;
-
-// Transport
-pub mod transport;
+/// OpenAI-compatible model implementations
+pub mod openai {
+    pub use remi_model::openai::*;
+}
 
 // ── Prelude ───────────────────────────────────────────────────────────────────
 
 pub mod prelude {
-    pub use crate::agent::{Agent, AgentExt, Layer};
-    pub use crate::agent_loop::AgentLoop;
-    pub use crate::builder::{AgentBuilder, BuiltAgent};
-    pub use crate::config::{AgentConfig, ConfigProvider};
-    pub use crate::context::{ContextStore, ContextStoreExt, InMemoryStore, NoStore};
-    pub use crate::error::AgentError;
-    pub use crate::interrupt::{InterruptHandler, InterruptRouter};
-    pub use crate::model::openai::OpenAIClient;
-    pub use crate::model::ChatModel;
-    pub use crate::protocol::{ProtocolAgent, ProtocolError, ProtocolEvent};
-    pub use crate::state::{step, Action, AgentPhase, AgentState, StepConfig, StepEvent};
-    pub use crate::tool::{
-        registry::{DefaultToolRegistry, ToolRegistry},
-        InterruptRequest, Tool, ToolContext, ToolDefinition, ToolOutput, ToolResult,
-    };
-    pub use crate::tracing::stdout::StdoutTracer;
-    pub use crate::tracing::{DynTracer, Tracer};
-    pub use crate::types::{
-        AgentEvent, ChatInput, ChatRequest, ChatResponseChunk, Content, ContentPart, InterruptId,
-        InterruptInfo, LoopInput, Message, MessageId, ParsedToolCall, ResumePayload, Role, RunId,
-        ThreadId, ToolCallOutcome, ToolCallResult,
-    };
-    pub use crate::union::{Union2, Union3, Union4};
+    // Core
+    pub use remi_core::prelude::*;
+
+    // Transport
+    pub use remi_transport::HttpTransport;
+    #[cfg(feature = "http-client")]
+    pub use remi_transport::ReqwestTransport;
+
+    // Model
+    pub use remi_model::OpenAIClient;
+
+    // Tool implementations
+    #[cfg(feature = "tool-bash")]
+    pub use remi_tool::BashTool;
+    #[cfg(feature = "tool-fs")]
+    pub use remi_tool::FsTool;
+    #[cfg(feature = "tool-fs-virtual")]
+    pub use remi_tool::VirtualFsTool;
+    #[cfg(feature = "tool-bash-virtual")]
+    pub use remi_tool::VirtualBashTool;
 }

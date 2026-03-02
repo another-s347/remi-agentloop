@@ -1,0 +1,16 @@
+[package]
+name = "remi-cli"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "CLI toolchain for building remi-agentloop agents into WASM targets"
+
+[[bin]]
+name = "remi"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+toml_edit = "0.22"
+serde = { version = "1", features = ["derive"] }
+tempfile = "3"

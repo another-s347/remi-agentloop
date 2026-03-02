@@ -1,0 +1,27 @@
+package remi:agentloop;
+
+/// Agent interface — the standard way for WASM guest agents to communicate.
+///
+/// Uses the Component Model resource pattern for streaming:
+/// `chat()` returns an `event-stream` resource, and the host pulls
+/// events by calling `next()` until it returns `none`.
+interface agent {
+    /// A stream of JSON-encoded ProtocolEvent chunks.
+    ///
+    /// The host calls `next()` repeatedly:
+    /// - `some(json)` → next event (a serialized ProtocolEvent)
+    /// - `none`       → stream finished
+    resource event-stream {
+        next: func() -> option<string>;
+    }
+
+    /// Process a chat request and return a stream of events.
+    ///
+    /// `input-json` is a JSON-encoded `LoopInput`.
+    /// Returns an `event-stream` resource on success, or an error string.
+    chat: func(input-json: string) -> result<event-stream, string>;
+}
+
+world agent-world {
+    export agent;
+}

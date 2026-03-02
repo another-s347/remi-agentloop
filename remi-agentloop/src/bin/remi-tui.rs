@@ -732,7 +732,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 async fn run_app(
     terminal: &mut Tui,
-    agent: BuiltAgent<OpenAIClient, NoStore>,
+    agent: BuiltAgent<OpenAIClient<ReqwestTransport>, NoStore>,
     model_name: String,
 ) -> io::Result<()> {
     let mut app = AppState::new(model_name);

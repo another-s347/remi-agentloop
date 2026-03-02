@@ -1,0 +1,371 @@
+//! `remi build` — compile a remi-agentloop agent lib into WASM targets.
+//!
+//! Usage:
+//! ```sh
+//! remi build --agent ./my-agent                     # both targets
+//! remi build --agent ./my-agent --targets wasip2    # wasip2 only
+//! remi build --agent ./my-agent --targets web       # browser only
+//! remi build --agent ./my-agent --output ./dist     # custom output dir
+//! ```
+//!
+//! The agent crate must export a function with this signature:
+//! ```rust,ignore
+//! pub fn build_agent<T: HttpTransport>(oai: OpenAIClient<T>) -> impl Agent { .. }
+//! ```
+//!
+//! The CLI generates a temporary entry crate for each target, runs
+//! `cargo build` / `wasm-pack build`, and copies the output to `dist/`.
+
+use clap::{Parser, ValueEnum};
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
+mod templates;
+
+// ── CLI ──────────────────────────────────────────────────────────────────────
+
+#[derive(Parser)]
+#[command(name = "remi", version, about = "Remi agent toolchain")]
+enum Cli {
+    /// Build an agent crate into WASM targets (wasip2, web, or both).
+    Build(BuildArgs),
+}
+
+#[derive(Parser)]
+struct BuildArgs {
+    /// Path to the agent crate (must have build_agent<T>() function).
+    #[arg(long)]
+    agent: PathBuf,
+
+    /// Which WASM targets to build.
+    #[arg(long, value_delimiter = ',', default_value = "wasip2,web")]
+    targets: Vec<Target>,
+
+    /// Output directory for build artifacts.
+    #[arg(long, default_value = "dist")]
+    output: PathBuf,
+
+    /// Function name to call in the agent crate.
+    #[arg(long, default_value = "build_agent")]
+    entry: String,
+
+    /// Release mode (default: true).
+    #[arg(long, default_value_t = true)]
+    release: bool,
+
+    /// Path to the remi-agentloop workspace root (auto-detected if omitted).
+    #[arg(long)]
+    remi_root: Option<PathBuf>,
+}
+
+#[derive(Clone, Debug, ValueEnum, PartialEq)]
+enum Target {
+    Wasip2,
+    Web,
+}
+
+// ── Main ─────────────────────────────────────────────────────────────────────
+
+fn main() {
+    let Cli::Build(args) = Cli::parse();
+
+    // Resolve paths
+    let agent_path = std::fs::canonicalize(&args.agent).unwrap_or_else(|e| {
+        eprintln!("Error: cannot find agent crate at {:?}: {e}", args.agent);
+        std::process::exit(1);
+    });
+
+    let remi_root = args
+        .remi_root
+        .map(|p| std::fs::canonicalize(p).expect("cannot resolve --remi-root"))
+        .unwrap_or_else(|| detect_remi_root());
+
+    let remi_agentloop_path = remi_root.join("remi-agentloop");
+    let remi_macros_path = remi_root.join("remi-agentloop-macros");
+
+    // Read agent crate name from Cargo.toml
+    let agent_name = read_crate_name(&agent_path);
+    println!("Agent crate: {agent_name} ({agent_path:?})");
+
+    // Create output dir
+    let output = if args.output.is_absolute() {
+        args.output.clone()
+    } else {
+        std::env::current_dir().unwrap().join(&args.output)
+    };
+    std::fs::create_dir_all(&output).expect("cannot create output dir");
+
+    let mut ok = true;
+
+    for target in &args.targets {
+        let success = match target {
+            Target::Wasip2 => build_wasip2(
+                &agent_path,
+                &agent_name,
+                &args.entry,
+                &remi_agentloop_path,
+                &remi_macros_path,
+                &output,
+                args.release,
+            ),
+            Target::Web => build_web(
+                &agent_path,
+                &agent_name,
+                &args.entry,
+                &remi_agentloop_path,
+                &remi_macros_path,
+                &output,
+                args.release,
+            ),
+        };
+        if !success {
+            ok = false;
+        }
+    }
+
+    if ok {
+        println!("\n✅ All targets built successfully. Output: {output:?}");
+    } else {
+        eprintln!("\n❌ Some targets failed.");
+        std::process::exit(1);
+    }
+}
+
+// ── Build: wasip2 ────────────────────────────────────────────────────────────
+
+fn build_wasip2(
+    agent_path: &Path,
+    agent_name: &str,
+    entry_fn: &str,
+    remi_agentloop_path: &Path,
+    remi_macros_path: &Path,
+    output: &Path,
+    release: bool,
+) -> bool {
+    println!("\n── Building wasip2 ──────────────────────────────────────");
+
+    // Check target is installed
+    if !check_target_installed("wasm32-wasip2") {
+        eprintln!("Error: target wasm32-wasip2 not installed. Run:");
+        eprintln!("  rustup target add wasm32-wasip2");
+        return false;
+    }
+
+    let tmp = tempfile::Builder::new()
+        .prefix("remi-wasip2-")
+        .tempdir()
+        .expect("cannot create temp dir");
+    let crate_dir = tmp.path();
+
+    // Generate Cargo.toml
+    let cargo_toml = templates::wasip2_cargo_toml(
+        agent_name,
+        &agent_path.display().to_string(),
+        &remi_agentloop_path.display().to_string(),
+        &remi_macros_path.display().to_string(),
+    );
+    std::fs::write(crate_dir.join("Cargo.toml"), cargo_toml).unwrap();
+
+    // Generate src/lib.rs
+    let src_dir = crate_dir.join("src");
+    std::fs::create_dir_all(&src_dir).unwrap();
+    let lib_rs = templates::wasip2_lib_rs(agent_name, entry_fn);
+    std::fs::write(src_dir.join("lib.rs"), lib_rs).unwrap();
+
+    // Build
+    let mut cmd = Command::new("cargo");
+    cmd.arg("build")
+        .arg("--target")
+        .arg("wasm32-wasip2")
+        .current_dir(crate_dir);
+    if release {
+        cmd.arg("--release");
+    }
+
+    println!("  Running: cargo build --target wasm32-wasip2 {}", if release { "--release" } else { "" });
+    let status = cmd.status();
+    match status {
+        Ok(s) if s.success() => {
+            // Copy output
+            let profile = if release { "release" } else { "debug" };
+            let wasm_file = crate_dir
+                .join("target")
+                .join("wasm32-wasip2")
+                .join(profile)
+                .join(format!("{}_wasip2_entry.wasm", agent_name.replace('-', "_")));
+            let dest = output.join(format!("{agent_name}.wasm"));
+            if wasm_file.exists() {
+                std::fs::copy(&wasm_file, &dest).unwrap();
+                let size = std::fs::metadata(&dest).unwrap().len();
+                println!("  ✅ wasip2: {} ({:.0} KB)", dest.display(), size as f64 / 1024.0);
+                true
+            } else {
+                eprintln!("  ❌ Expected output not found: {}", wasm_file.display());
+                // Try to find it
+                find_wasm_in_dir(&crate_dir.join("target").join("wasm32-wasip2").join(profile));
+                false
+            }
+        }
+        Ok(s) => {
+            eprintln!("  ❌ cargo build failed with: {s}");
+            false
+        }
+        Err(e) => {
+            eprintln!("  ❌ cannot run cargo: {e}");
+            false
+        }
+    }
+}
+
+// ── Build: web (browser) ─────────────────────────────────────────────────────
+
+fn build_web(
+    agent_path: &Path,
+    agent_name: &str,
+    entry_fn: &str,
+    remi_agentloop_path: &Path,
+    remi_macros_path: &Path,
+    output: &Path,
+    release: bool,
+) -> bool {
+    println!("\n── Building web (browser) ──────────────────────────────");
+
+    // Check wasm-pack is installed
+    if Command::new("wasm-pack").arg("--version").output().is_err() {
+        eprintln!("Error: wasm-pack not installed. Run:");
+        eprintln!("  cargo install wasm-pack");
+        return false;
+    }
+
+    let tmp = tempfile::Builder::new()
+        .prefix("remi-web-")
+        .tempdir()
+        .expect("cannot create temp dir");
+    let crate_dir = tmp.path();
+
+    // Generate Cargo.toml
+    let cargo_toml = templates::web_cargo_toml(
+        agent_name,
+        &agent_path.display().to_string(),
+        &remi_agentloop_path.display().to_string(),
+        &remi_macros_path.display().to_string(),
+    );
+    std::fs::write(crate_dir.join("Cargo.toml"), cargo_toml).unwrap();
+
+    // Generate src/lib.rs
+    let src_dir = crate_dir.join("src");
+    std::fs::create_dir_all(&src_dir).unwrap();
+    let lib_rs = templates::web_lib_rs(agent_name, entry_fn);
+    std::fs::write(src_dir.join("lib.rs"), lib_rs).unwrap();
+
+    // Build with wasm-pack
+    let mut cmd = Command::new("wasm-pack");
+    cmd.arg("build")
+        .arg("--target")
+        .arg("web")
+        .current_dir(crate_dir);
+    if release {
+        cmd.arg("--release");
+    }
+
+    println!("  Running: wasm-pack build --target web {}", if release { "--release" } else { "" });
+    let status = cmd.status();
+    match status {
+        Ok(s) if s.success() => {
+            // Copy pkg/ directory to output
+            let pkg_dir = crate_dir.join("pkg");
+            let dest_dir = output.join(format!("{agent_name}-web"));
+            if pkg_dir.exists() {
+                copy_dir_recursive(&pkg_dir, &dest_dir);
+                println!("  ✅ web: {}/", dest_dir.display());
+                true
+            } else {
+                eprintln!("  ❌ Expected pkg/ directory not found");
+                false
+            }
+        }
+        Ok(s) => {
+            eprintln!("  ❌ wasm-pack build failed with: {s}");
+            false
+        }
+        Err(e) => {
+            eprintln!("  ❌ cannot run wasm-pack: {e}");
+            false
+        }
+    }
+}
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
+
+fn detect_remi_root() -> PathBuf {
+    // Walk up from CWD looking for Cargo.toml with [workspace] members containing remi-agentloop
+    let mut dir = std::env::current_dir().unwrap();
+    loop {
+        let cargo_toml = dir.join("Cargo.toml");
+        if cargo_toml.exists() {
+            let content = std::fs::read_to_string(&cargo_toml).unwrap_or_default();
+            if content.contains("remi-agentloop") && content.contains("[workspace]") {
+                return dir;
+            }
+        }
+        if !dir.pop() {
+            eprintln!("Error: cannot find remi-agentloop workspace root.");
+            eprintln!("Run from within the workspace, or pass --remi-root <path>");
+            std::process::exit(1);
+        }
+    }
+}
+
+fn read_crate_name(crate_path: &Path) -> String {
+    let cargo_toml = crate_path.join("Cargo.toml");
+    let content = std::fs::read_to_string(&cargo_toml).unwrap_or_else(|e| {
+        eprintln!("Error: cannot read {:?}: {e}", cargo_toml);
+        std::process::exit(1);
+    });
+    let doc = content.parse::<toml_edit::DocumentMut>().unwrap_or_else(|e| {
+        eprintln!("Error: cannot parse {:?}: {e}", cargo_toml);
+        std::process::exit(1);
+    });
+    doc["package"]["name"]
+        .as_str()
+        .unwrap_or_else(|| {
+            eprintln!("Error: no [package] name in {:?}", cargo_toml);
+            std::process::exit(1);
+        })
+        .to_string()
+}
+
+fn check_target_installed(target: &str) -> bool {
+    let output = Command::new("rustup")
+        .args(["target", "list", "--installed"])
+        .output();
+    match output {
+        Ok(o) => String::from_utf8_lossy(&o.stdout).contains(target),
+        Err(_) => false,
+    }
+}
+
+fn find_wasm_in_dir(dir: &Path) {
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if p.extension().map(|e| e == "wasm").unwrap_or(false) {
+                eprintln!("  Found: {}", p.display());
+            }
+        }
+    }
+}
+
+fn copy_dir_recursive(src: &Path, dst: &Path) {
+    std::fs::create_dir_all(dst).unwrap();
+    for entry in std::fs::read_dir(src).unwrap() {
+        let entry = entry.unwrap();
+        let ty = entry.file_type().unwrap();
+        let dest = dst.join(entry.file_name());
+        if ty.is_dir() {
+            copy_dir_recursive(&entry.path(), &dest);
+        } else {
+            std::fs::copy(entry.path(), &dest).unwrap();
+        }
+    }
+}

@@ -604,8 +604,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
 
             // Internal events — shouldn't reach us, but ignore if they do.
-            AgentEvent::NewMessages(_) => {}
             AgentEvent::NeedToolExecution { .. } => {}
+            AgentEvent::Cancelled => {}
+            AgentEvent::Checkpoint(_) => {}
         }
     }
 
