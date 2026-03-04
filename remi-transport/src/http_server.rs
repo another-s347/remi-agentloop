@@ -11,7 +11,6 @@ use axum::Json;
 use futures::{Stream, StreamExt};
 
 use remi_core::protocol::{ProtocolError, ProtocolEvent};
-use crate::sse::encode_sse_event;
 use remi_core::types::LoopInput;
 
 /// HTTP SSE server for exposing an agent over HTTP.
@@ -53,15 +52,30 @@ where
         self
     }
 
+    /// Build the axum `Router` for this server without binding.
+    ///
+    /// Useful when you want to merge additional routes (e.g. a static UI or
+    /// a `/status` SSE endpoint) before binding and serving:
+    ///
+    /// ```ignore
+    /// let app = server.router()
+    ///     .merge(your_extra_router)
+    ///     .layer(CorsLayer::permissive());
+    /// let listener = tokio::net::TcpListener::bind(addr).await?;
+    /// axum::serve(listener, app).await?;
+    /// ```
+    pub fn router(self) -> axum::Router {
+        let handler = self.handler;
+        axum::Router::new()
+            .route("/chat", post(handle_chat::<F, Fut, S>))
+            .with_state(handler)
+    }
+
     /// Start the HTTP server.
     pub async fn serve(self) -> Result<(), std::io::Error> {
-        let handler = self.handler;
-
-        let app = axum::Router::new()
-            .route("/chat", post(handle_chat::<F, Fut, S>))
-            .with_state(handler);
-
-        let listener = tokio::net::TcpListener::bind(self.bind_addr).await?;
+        let addr = self.bind_addr;
+        let app = self.router();
+        let listener = tokio::net::TcpListener::bind(addr).await?;
         axum::serve(listener, app).await
     }
 }
@@ -81,14 +95,36 @@ where
                 message: e.message.clone(),
                 code: Some(e.code.clone()),
             };
-            let data = encode_sse_event(&err_event);
             Sse::new(Box::pin(futures::stream::once(async move {
-                Ok::<Event, Infallible>(Event::default().data(data))
+                Ok::<Event, Infallible>(protocol_event_to_sse(&err_event))
             })))
         }
         Ok(stream) => Sse::new(Box::pin(stream.map(|event| {
-            let data = encode_sse_event(&event);
-            Ok::<Event, Infallible>(Event::default().data(data))
+            Ok::<Event, Infallible>(protocol_event_to_sse(&event))
         }))),
     }
+}
+
+/// Convert a ProtocolEvent into an axum SSE Event with proper event type + JSON data.
+fn protocol_event_to_sse(event: &ProtocolEvent) -> Event {
+    let event_type = match event {
+        ProtocolEvent::RunStart { .. }   => "run_start",
+        ProtocolEvent::Delta { .. }      => "delta",
+        ProtocolEvent::ThinkingStart     => "thinking_start",
+        ProtocolEvent::ThinkingEnd { .. } => "thinking_end",
+        ProtocolEvent::ToolCallStart { .. } => "tool_call_start",
+        ProtocolEvent::ToolCallDelta { .. } => "tool_call_delta",
+        ProtocolEvent::ToolDelta { .. }  => "tool_delta",
+        ProtocolEvent::ToolResult { .. } => "tool_result",
+        ProtocolEvent::Interrupt { .. }  => "interrupt",
+        ProtocolEvent::TurnStart { .. }  => "turn_start",
+        ProtocolEvent::Usage { .. }      => "usage",
+        ProtocolEvent::Error { .. }      => "error",
+        ProtocolEvent::Done              => "done",
+        ProtocolEvent::Cancelled         => "cancelled",
+        ProtocolEvent::NeedToolExecution { .. } => "need_tool_execution",
+        ProtocolEvent::Custom { event_type, .. } => event_type.as_str(),
+    };
+    let data = serde_json::to_string(event).unwrap_or_default();
+    Event::default().event(event_type).data(data)
 }

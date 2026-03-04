@@ -1,9 +1,12 @@
-use std::future::Future;
-use std::time::Duration;
-use serde::Serialize;
 use crate::types::{InterruptInfo, Message, RunId, ThreadId};
+use serde::Serialize;
+use std::time::Duration;
 
+#[cfg(feature = "tracing-langsmith")]
+pub mod langsmith;
 pub mod stdout;
+#[cfg(feature = "tracing-langsmith")]
+pub use langsmith::LangSmithTracer;
 
 // ── Trace event structs ───────────────────────────────────────────────────────
 
@@ -89,6 +92,7 @@ pub struct ToolEndTrace {
     pub tool_name: String,
     pub result: Option<String>,
     pub interrupted: bool,
+    pub error: Option<String>,
     pub duration: Duration,
     pub timestamp: chrono::DateTime<chrono::Utc>,
 }
@@ -118,22 +122,22 @@ pub struct TurnStartTrace {
 
 /// Pluggable tracing backend — all methods have default no-op implementations
 pub trait Tracer {
-    fn on_run_start(&self, _event: &RunStartTrace) -> impl Future<Output = ()> { async {} }
-    fn on_run_end(&self, _event: &RunEndTrace) -> impl Future<Output = ()> { async {} }
-    fn on_model_start(&self, _event: &ModelStartTrace) -> impl Future<Output = ()> { async {} }
-    fn on_model_end(&self, _event: &ModelEndTrace) -> impl Future<Output = ()> { async {} }
-    fn on_tool_start(&self, _event: &ToolStartTrace) -> impl Future<Output = ()> { async {} }
-    fn on_tool_end(&self, _event: &ToolEndTrace) -> impl Future<Output = ()> { async {} }
-    fn on_interrupt(&self, _event: &InterruptTrace) -> impl Future<Output = ()> { async {} }
-    fn on_resume(&self, _event: &ResumeTrace) -> impl Future<Output = ()> { async {} }
-    fn on_turn_start(&self, _event: &TurnStartTrace) -> impl Future<Output = ()> { async {} }
-    fn on_custom(&self, _name: &str, _data: &serde_json::Value) -> impl Future<Output = ()> { async {} }
+    async fn on_run_start(&self, _event: &RunStartTrace) {}
+    async fn on_run_end(&self, _event: &RunEndTrace) {}
+    async fn on_model_start(&self, _event: &ModelStartTrace) {}
+    async fn on_model_end(&self, _event: &ModelEndTrace) {}
+    async fn on_tool_start(&self, _event: &ToolStartTrace) {}
+    async fn on_tool_end(&self, _event: &ToolEndTrace) {}
+    async fn on_interrupt(&self, _event: &InterruptTrace) {}
+    async fn on_resume(&self, _event: &ResumeTrace) {}
+    async fn on_turn_start(&self, _event: &TurnStartTrace) {}
+    async fn on_custom(&self, _name: &str, _data: &serde_json::Value) {}
 }
 
 // ── DynTracer — object-safe version ──────────────────────────────────────────
 
-use std::pin::Pin;
 use std::future::Future as StdFuture;
+use std::pin::Pin;
 type BoxFuture<'a> = Pin<Box<dyn StdFuture<Output = ()> + 'a>>;
 
 pub trait DynTracer: Send + Sync {
@@ -185,7 +189,11 @@ pub struct CompositeTracer {
 }
 
 impl CompositeTracer {
-    pub fn new() -> Self { Self { tracers: Vec::new() } }
+    pub fn new() -> Self {
+        Self {
+            tracers: Vec::new(),
+        }
+    }
     pub fn add(mut self, tracer: impl Tracer + Send + Sync + 'static) -> Self {
         self.tracers.push(Box::new(tracer));
         self
@@ -195,47 +203,65 @@ impl CompositeTracer {
 impl DynTracer for CompositeTracer {
     fn on_run_start<'a>(&'a self, event: &'a RunStartTrace) -> BoxFuture<'a> {
         Box::pin(async move {
-            for t in &self.tracers { t.on_run_start(event).await; }
+            for t in &self.tracers {
+                t.on_run_start(event).await;
+            }
         })
     }
     fn on_run_end<'a>(&'a self, event: &'a RunEndTrace) -> BoxFuture<'a> {
         Box::pin(async move {
-            for t in &self.tracers { t.on_run_end(event).await; }
+            for t in &self.tracers {
+                t.on_run_end(event).await;
+            }
         })
     }
     fn on_model_start<'a>(&'a self, event: &'a ModelStartTrace) -> BoxFuture<'a> {
         Box::pin(async move {
-            for t in &self.tracers { t.on_model_start(event).await; }
+            for t in &self.tracers {
+                t.on_model_start(event).await;
+            }
         })
     }
     fn on_model_end<'a>(&'a self, event: &'a ModelEndTrace) -> BoxFuture<'a> {
         Box::pin(async move {
-            for t in &self.tracers { t.on_model_end(event).await; }
+            for t in &self.tracers {
+                t.on_model_end(event).await;
+            }
         })
     }
     fn on_tool_start<'a>(&'a self, event: &'a ToolStartTrace) -> BoxFuture<'a> {
         Box::pin(async move {
-            for t in &self.tracers { t.on_tool_start(event).await; }
+            for t in &self.tracers {
+                t.on_tool_start(event).await;
+            }
         })
     }
     fn on_tool_end<'a>(&'a self, event: &'a ToolEndTrace) -> BoxFuture<'a> {
         Box::pin(async move {
-            for t in &self.tracers { t.on_tool_end(event).await; }
+            for t in &self.tracers {
+                t.on_tool_end(event).await;
+            }
         })
     }
     fn on_interrupt<'a>(&'a self, event: &'a InterruptTrace) -> BoxFuture<'a> {
         Box::pin(async move {
-            for t in &self.tracers { t.on_interrupt(event).await; }
+            for t in &self.tracers {
+                t.on_interrupt(event).await;
+            }
         })
     }
     fn on_resume<'a>(&'a self, event: &'a ResumeTrace) -> BoxFuture<'a> {
         Box::pin(async move {
-            for t in &self.tracers { t.on_resume(event).await; }
+            for t in &self.tracers {
+                t.on_resume(event).await;
+            }
         })
     }
     fn on_turn_start<'a>(&'a self, event: &'a TurnStartTrace) -> BoxFuture<'a> {
         Box::pin(async move {
-            for t in &self.tracers { t.on_turn_start(event).await; }
+            for t in &self.tracers {
+                t.on_turn_start(event).await;
+            }
         })
     }
 }

@@ -13,7 +13,7 @@ use crate::model::ChatModel;
 use crate::state::Action;
 use crate::tool::registry::{DefaultToolRegistry, ToolRegistry};
 use crate::tool::Tool;
-use crate::tracing::{DynTracer, Tracer};
+use crate::tracing::{DynTracer, ResumeTrace, Tracer};
 use crate::types::{AgentEvent, ChatInput, Message, Role, ThreadId, ToolCallOutcome};
 
 // ── Typestate markers ─────────────────────────────────────────────────────────
@@ -341,6 +341,17 @@ impl<M: ChatModel, S: ContextStore, C: CheckpointStore> BuiltAgent<M, S, C> {
                     return Ok(None);
                 }
                 let action = cp.pending_action.unwrap();
+                let payloads_count = match &action {
+                    crate::state::Action::ToolResults(r) => r.len(),
+                    _ => 0,
+                };
+                if let Some(t) = self.inner.tracer.as_deref() {
+                    t.on_resume(&ResumeTrace {
+                        run_id: cp.state.run_id.clone(),
+                        payloads_count,
+                        timestamp: chrono::Utc::now(),
+                    }).await;
+                }
                 Ok(Some(self.run_loop(cp.state, action, false)))
             }
         }
@@ -476,6 +487,14 @@ impl<M: ChatModel, S: ContextStore, C: CheckpointStore> BuiltAgent<M, S, C> {
 
                 // step() will append tool_result messages to state.messages,
                 // run_loop will detect & persist the new messages automatically.
+                let payloads_count = outcomes.len();
+                if let Some(t) = self.inner.tracer.as_deref() {
+                    t.on_resume(&ResumeTrace {
+                        run_id: state.run_id.clone(),
+                        payloads_count,
+                        timestamp: chrono::Utc::now(),
+                    }).await;
+                }
                     Ok(Box::pin(self.run_loop(state, Action::ToolResults(outcomes), false)))
             }
 

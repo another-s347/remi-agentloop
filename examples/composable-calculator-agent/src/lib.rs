@@ -116,6 +116,7 @@ where
                     }
                 }
                 resume @ LoopInput::Resume { .. } => resume,
+                cancel @ LoopInput::Cancel { .. } => cancel,
             };
 
             let mut next_input = Some(first_input);

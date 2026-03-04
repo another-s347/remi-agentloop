@@ -117,12 +117,12 @@ pub trait Tool {
     ///
     /// `ctx` provides runtime context (config, thread_id, run_id, metadata).
     /// Tools that don't need context can simply ignore the parameter.
-    fn execute(
+    async fn execute(
         &self,
         arguments: serde_json::Value,
         resume: Option<ResumePayload>,
         ctx: &ToolContext,
-    ) -> impl Future<Output = Result<ToolResult<impl Stream<Item = ToolOutput>>, AgentError>>;
+    ) -> Result<ToolResult<impl Stream<Item = ToolOutput>>, AgentError>;
 }
 
 // ── ToolDefinition ────────────────────────────────────────────────────────────

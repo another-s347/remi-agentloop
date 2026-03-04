@@ -208,6 +208,7 @@ fn extract_config(input: &LoopInput) -> (String, String, String) {
     let meta = match input {
         LoopInput::Start { metadata, .. } => metadata.as_ref(),
         LoopInput::Resume { state, .. } => state.config.metadata.as_ref(),
+        LoopInput::Cancel { state } => state.config.metadata.as_ref(),
     };
 
     let empty = serde_json::Value::Null;

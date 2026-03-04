@@ -9,8 +9,8 @@
 pub use remi_agentloop_macros::tool as tool_macro;
 
 pub use remi_core::{
-    agent, adapters, agent_loop, builder, checkpoint, config, context,
-    error, interrupt, model, protocol, state, tool, tracing, types, union,
+    adapters, agent, agent_loop, builder, checkpoint, config, context, error, interrupt, model,
+    protocol, state, tool, tracing, types, union,
 };
 
 // ── Re-exports from remi-transport ────────────────────────────────────────────
@@ -46,13 +46,17 @@ pub mod prelude {
     // Model
     pub use remi_model::OpenAIClient;
 
+    // Tracing
+    #[cfg(feature = "tracing-langsmith")]
+    pub use remi_core::tracing::LangSmithTracer;
+
     // Tool implementations
     #[cfg(feature = "tool-bash")]
     pub use remi_tool::BashTool;
     #[cfg(feature = "tool-fs")]
     pub use remi_tool::FsTool;
-    #[cfg(feature = "tool-fs-virtual")]
-    pub use remi_tool::VirtualFsTool;
     #[cfg(feature = "tool-bash-virtual")]
     pub use remi_tool::VirtualBashTool;
+    #[cfg(feature = "tool-fs-virtual")]
+    pub use remi_tool::VirtualFsTool;
 }

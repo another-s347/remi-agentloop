@@ -8,16 +8,27 @@ description = "WASM component runner for remi-agentloop — loads .wasm agents a
 [features]
 default = ["http-host"]
 http-host = ["reqwest"]
+dev-server = [
+    "http-host",
+    "remi-agentloop/http-server",
+    "dep:clap",
+    "dep:notify",
+]
 
 [dependencies]
 remi-agentloop = { path = "../remi-agentloop", default-features = false }
+remi-agentloop-guest = { path = "../remi-agentloop-guest" }
+remi-core = { path = "../remi-core" }
 wasmtime = { workspace = true }
 wasmtime-wasi = { workspace = true }
 futures = { workspace = true }
 async-stream = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
+tokio-stream = { workspace = true }
 reqwest = { workspace = true, optional = true, features = ["rustls-tls"] }
+clap = { version = "4", features = ["derive"], optional = true }
+notify = { version = "6", optional = true }
 
 [[example]]
 name = "wasm_calculator"
@@ -28,3 +39,8 @@ name = "wasm_calculator_layered"
 [[example]]
 name = "wasm_composable_calculator"
 required-features = ["http-host"]
+
+[[bin]]
+name = "remi-dev-server"
+path = "src/bin/dev_server.rs"
+required-features = ["dev-server"]

@@ -11,7 +11,7 @@ http-client = ["reqwest/rustls-tls", "tokio/full"]
 http-server = ["axum", "tokio/full"]
 
 [dependencies]
-remi-core = { path = "../remi-core" }
+remi-core = { path = "../remi-core", default-features = false }
 
 futures = { workspace = true }
 async-stream = { workspace = true }

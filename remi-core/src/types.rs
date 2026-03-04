@@ -195,6 +195,7 @@ pub enum Role {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Message {
+    #[serde(default)]
     pub id: MessageId,
     pub role: Role,
     pub content: Content,
@@ -202,6 +203,10 @@ pub struct Message {
     pub tool_calls: Option<Vec<ToolCallMessage>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
+    /// Chain-of-thought / reasoning text returned by thinking models (e.g. Kimi K2.5).
+    /// Must be echoed back verbatim when replaying the conversation history.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_content: Option<String>,
 }
 
 impl Message {
@@ -212,6 +217,7 @@ impl Message {
             content: Content::text(text),
             tool_calls: None,
             tool_call_id: None,
+            reasoning_content: None,
         }
     }
 
@@ -222,6 +228,7 @@ impl Message {
             content: Content::text(text),
             tool_calls: None,
             tool_call_id: None,
+            reasoning_content: None,
         }
     }
 
@@ -232,12 +239,14 @@ impl Message {
             content: Content::text(text),
             tool_calls: None,
             tool_call_id: None,
+            reasoning_content: None,
         }
     }
 
     pub fn assistant_with_tool_calls(
         text: impl Into<String>,
         tool_calls: Vec<ToolCallMessage>,
+        reasoning_content: Option<String>,
     ) -> Self {
         Self {
             id: MessageId::new(),
@@ -245,6 +254,7 @@ impl Message {
             content: Content::text(text),
             tool_calls: Some(tool_calls),
             tool_call_id: None,
+            reasoning_content,
         }
     }
 
@@ -255,6 +265,7 @@ impl Message {
             content: Content::text(result),
             tool_calls: None,
             tool_call_id: Some(tool_call_id.into()),
+            reasoning_content: None,
         }
     }
 
@@ -265,6 +276,7 @@ impl Message {
             content: Content::parts(parts),
             tool_calls: None,
             tool_call_id: None,
+            reasoning_content: None,
         }
     }
 }
@@ -315,6 +327,10 @@ pub enum ChatResponseChunk {
         content: String,
         role: Option<Role>,
     },
+    /// Chain-of-thought / thinking content from reasoning models (e.g. Kimi K2.5, DeepSeek-R1).
+    ReasoningDelta {
+        content: String,
+    },
     ToolCallStart {
         index: usize,
         id: String,
@@ -345,6 +361,13 @@ pub enum AgentEvent {
         metadata: Option<serde_json::Value>,
     },
     TextDelta(String),
+    /// Emitted once when a thinking model begins its chain-of-thought.
+    /// All events until `ThinkingEnd` occur conceptually inside the thinking phase.
+    ThinkingStart,
+    /// Emitted when the thinking phase ends. Carries the full accumulated reasoning text.
+    ThinkingEnd {
+        content: String,
+    },
     ToolCallStart {
         id: String,
         name: String,
@@ -519,9 +542,7 @@ pub enum LoopInput {
     /// Cancel an in-progress run.  Produces a `Cancelled` checkpoint so the
     /// conversation can be resumed later.
     #[serde(rename = "cancel")]
-    Cancel {
-        state: crate::state::AgentState,
-    },
+    Cancel { state: crate::state::AgentState },
 }
 
 impl LoopInput {
@@ -660,9 +681,7 @@ pub enum ChatInput {
     },
     /// Cancel an in-progress run.  Saves a `Cancelled` checkpoint and
     /// yields `AgentEvent::Cancelled` so the conversation can be resumed later.
-    Cancel {
-        run_id: RunId,
-    },
+    Cancel { run_id: RunId },
 }
 
 impl From<String> for ChatInput {

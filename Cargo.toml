@@ -9,6 +9,7 @@ members = [
     "remi-agentloop-guest",
     "remi-agentloop-wasm",
     "remi-cli",
+    "remi-deepagent",
 ]
 exclude = [
     "examples/wasm-calculator-guest",
@@ -41,7 +42,7 @@ serde_json = "1"
 thiserror = "1"
 
 # UUID
-uuid = { version = "1", features = ["v4"] }
+uuid = { version = "1", features = ["v4", "v5"] }
 
 # HTTP (optional)
 reqwest = { version = "0.12", default-features = false, features = [
@@ -63,6 +64,9 @@ proc-macro2 = "1"
 # TUI
 ratatui = { version = "0.26" }
 crossterm = { version = "0.27", features = ["event-stream"] }
+
+# Config
+toml = "0.8"
 
 # Encoding
 base64 = "0.22"

@@ -41,6 +41,8 @@ enum InputMode {
 struct DisplayMessage {
     role: DisplayRole,
     content: String,
+    /// Accumulated reasoning/thinking content (collapsed in display).
+    thinking: String,
     tool_calls: Vec<ToolCallState>,
 }
 
@@ -83,6 +85,10 @@ struct PendingInterrupt {
 struct AppState {
     messages: Vec<DisplayMessage>,
     streaming_content: String,
+    /// Thinking content from the current turn (set at ThinkingEnd).
+    streaming_thinking: String,
+    /// True while a ThinkingStart has been received but ThinkingEnd has not yet arrived.
+    is_thinking: bool,
     active_tools: Vec<ToolCallState>,
     pending_interrupt: Option<PendingInterrupt>,
     input: String,
@@ -107,6 +113,8 @@ impl AppState {
         Self {
             messages: Vec::new(),
             streaming_content: String::new(),
+            streaming_thinking: String::new(),
+            is_thinking: false,
             active_tools: Vec::new(),
             pending_interrupt: None,
             input: String::new(),
@@ -134,11 +142,15 @@ impl AppState {
 
     fn finalize_assistant_turn(&mut self) {
         if self.streaming_content.is_empty() && self.active_tools.is_empty() {
+            self.streaming_thinking.clear();
+            self.is_thinking = false;
             return;
         }
+        self.is_thinking = false;
         self.messages.push(DisplayMessage {
             role: DisplayRole::Assistant,
             content: std::mem::take(&mut self.streaming_content),
+            thinking: std::mem::take(&mut self.streaming_thinking),
             tool_calls: std::mem::take(&mut self.active_tools),
         });
     }
@@ -147,6 +159,7 @@ impl AppState {
         self.messages.push(DisplayMessage {
             role: DisplayRole::User,
             content: text.to_string(),
+            thinking: String::new(),
             tool_calls: vec![],
         });
     }
@@ -175,6 +188,14 @@ fn handle_agent_event(app: &mut AppState, event: AgentEvent) -> bool {
         }
         AgentEvent::TextDelta(text) => {
             app.streaming_content.push_str(&text);
+        }
+        AgentEvent::ThinkingStart => {
+            app.is_thinking = true;
+            app.status = "thinking\u{2026}".to_string();
+        }
+        AgentEvent::ThinkingEnd { content } => {
+            app.is_thinking = false;
+            app.streaming_thinking = content;
         }
         AgentEvent::ToolCallStart { id, name } => {
             app.active_tools.push(ToolCallState {
@@ -386,6 +407,7 @@ fn handle_command(app: &mut AppState, cmd: &str) {
                     "  Up/Down    command history"
                 )
                 .to_string(),
+                thinking: String::new(),
                 tool_calls: vec![],
             });
             app.scroll = u16::MAX; // will be clamped to bottom in render
@@ -393,6 +415,8 @@ fn handle_command(app: &mut AppState, cmd: &str) {
         "/clear" => {
             app.messages.clear();
             app.streaming_content.clear();
+            app.streaming_thinking.clear();
+            app.is_thinking = false;
             app.active_tools.clear();
             app.pending_interrupt = None;
             app.prompt_tokens = 0;
@@ -458,6 +482,14 @@ fn render_messages(f: &mut Frame, area: Rect, app: &AppState) {
                 lines.push(Line::from(""));
             }
             DisplayRole::Assistant => {
+                // Show collapsed thinking summary if present
+                if !msg.thinking.is_empty() {
+                    let token_count = msg.thinking.split_whitespace().count();
+                    lines.push(Line::from(Span::styled(
+                        format!("\u{1f9e0} Thought for ~{} words", token_count),
+                        Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC),
+                    )));
+                }
                 for content_line in msg.content.lines() {
                     lines.push(Line::from(Span::raw(content_line.to_string())));
                 }
@@ -472,6 +504,13 @@ fn render_messages(f: &mut Frame, area: Rect, app: &AppState) {
     }
 
     // Streaming content (in-progress assistant turn)
+    if app.is_thinking {
+        // Show a live thinking indicator while reasoning is still in progress
+        lines.push(Line::from(Span::styled(
+            "\u{1f9e0} Thinking\u{2026}",
+            Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC),
+        )));
+    }
     if !app.streaming_content.is_empty() {
         for content_line in app.streaming_content.lines() {
             lines.push(Line::from(Span::raw(content_line.to_string())));
@@ -744,6 +783,7 @@ async fn run_app(
             "Remi Agent ready \u{2014} model: {}  (type /help for commands)",
             app.model_name
         ),
+        thinking: String::new(),
         tool_calls: vec![],
     });
 

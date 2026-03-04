@@ -20,6 +20,14 @@ pub enum ProtocolEvent {
         role: Option<String>,
     },
 
+    /// Chain-of-thought / reasoning delta from a thinking model (e.g. Kimi K2.5).
+    #[serde(rename = "thinking_start")]
+    ThinkingStart,
+
+    /// Emitted when the thinking phase ends. Carries the full reasoning text.
+    #[serde(rename = "thinking_end")]
+    ThinkingEnd { content: String },
+
     #[serde(rename = "tool_call_start")]
     ToolCallStart { id: String, name: String },
 
@@ -72,6 +80,68 @@ pub enum ProtocolEvent {
         tool_calls: Vec<ParsedToolCall>,
         completed_results: Vec<ToolCallOutcome>,
     },
+
+    /// Arbitrary user-defined protocol event.  The `event_type` field carries
+    /// the custom sub-type name; `extra` holds any additional JSON payload.
+    #[serde(rename = "custom")]
+    Custom {
+        event_type: String,
+        #[serde(default, skip_serializing_if = "serde_json::Value::is_null")]
+        extra: serde_json::Value,
+    },
+}
+
+// ── CustomProtocolEvent trait ────────────────────────────────────────────────
+
+/// Trait for types that can be losslessly round-tripped through
+/// [`ProtocolEvent::Custom`].  Implement this on any struct / enum that you
+/// want to embed in the standard event stream.
+///
+/// ```rust,ignore
+/// #[derive(serde::Serialize, serde::Deserialize)]
+/// struct MyEvent { value: u32 }
+///
+/// impl CustomProtocolEvent for MyEvent {
+///     const EVENT_TYPE: &'static str = "my_event";
+/// }
+///
+/// let ev = MyEvent { value: 42 }.to_protocol_event().unwrap();
+/// let back: MyEvent = MyEvent::from_protocol_event(&ev).unwrap().unwrap();
+/// ```
+pub trait CustomProtocolEvent: Sized + serde::Serialize + serde::de::DeserializeOwned {
+    /// Unique string tag that identifies this custom event type.
+    const EVENT_TYPE: &'static str;
+
+    /// Wrap `self` into a [`ProtocolEvent::Custom`].
+    fn to_protocol_event(&self) -> Result<ProtocolEvent, serde_json::Error> {
+        Ok(ProtocolEvent::Custom {
+            event_type: Self::EVENT_TYPE.to_owned(),
+            extra: serde_json::to_value(self)?,
+        })
+    }
+
+    /// Try to extract `Self` from a [`ProtocolEvent`].  Returns `None` when
+    /// the event is not a `Custom` event or the `event_type` tag does not
+    /// match; returns `Some(Err(_))` if deserialization fails.
+    fn from_protocol_event(event: &ProtocolEvent) -> Option<Result<Self, serde_json::Error>> {
+        if let ProtocolEvent::Custom { event_type, extra } = event {
+            if event_type == Self::EVENT_TYPE {
+                return Some(serde_json::from_value(extra.clone()));
+            }
+        }
+        None
+    }
+}
+
+/// Convert any [`CustomProtocolEvent`] into a [`ProtocolEvent`] via the
+/// `Custom` variant.  Panics if serialization fails (use
+/// [`CustomProtocolEvent::to_protocol_event`] for a fallible version).
+impl<T: CustomProtocolEvent> From<T> for ProtocolEvent {
+    fn from(value: T) -> Self {
+        value
+            .to_protocol_event()
+            .expect("CustomProtocolEvent serialization failed")
+    }
 }
 
 /// 标准协议错误
@@ -123,6 +193,8 @@ impl From<AgentEvent> for ProtocolEvent {
                 content: s,
                 role: None,
             },
+            AgentEvent::ThinkingStart => ProtocolEvent::ThinkingStart,
+            AgentEvent::ThinkingEnd { content } => ProtocolEvent::ThinkingEnd { content },
             AgentEvent::ToolCallStart { id, name } => ProtocolEvent::ToolCallStart { id, name },
             AgentEvent::ToolCallArgumentsDelta { id, delta } => ProtocolEvent::ToolCallDelta {
                 id,

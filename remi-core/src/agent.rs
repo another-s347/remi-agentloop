@@ -1,4 +1,3 @@
-use std::future::Future;
 use futures::Stream;
 
 /// Core Agent trait — async streaming, fully generic, no Send bound.
@@ -10,10 +9,10 @@ pub trait Agent {
     type Response;
     type Error;
 
-    fn chat(
+    async fn chat(
         &self,
         req: Self::Request,
-    ) -> impl Future<Output = Result<impl Stream<Item = Self::Response>, Self::Error>>;
+    ) -> Result<impl Stream<Item = Self::Response>, Self::Error>;
 }
 
 /// Extension methods auto-provided to all `Agent` impls via blanket impl
@@ -31,7 +30,11 @@ pub trait AgentExt: Agent + Sized {
     where
         F: Fn(NewReq) -> Self::Request,
     {
-        crate::adapters::map::MapRequest { inner: self, f, _phantom: std::marker::PhantomData }
+        crate::adapters::map::MapRequest {
+            inner: self,
+            f,
+            _phantom: std::marker::PhantomData,
+        }
     }
 
     /// Transform the Error type

@@ -4,8 +4,7 @@ pub mod http;
 // SSE encoding / decoding
 pub mod sse;
 
-// HTTP SSE client (connects to remote Agent)
-#[cfg(feature = "http-client")]
+// HTTP SSE client — transport-generic, works on native/WASM/browser
 pub mod http_client;
 
 // HTTP SSE server (axum-based)
@@ -19,7 +18,6 @@ pub use http::{HttpStreamingResponse, HttpTransport, HttpTransportError, MaybeSe
 #[cfg(feature = "http-client")]
 pub use http::ReqwestTransport;
 
-#[cfg(feature = "http-client")]
 pub use http_client::HttpSseClient;
 
 #[cfg(feature = "http-server")]

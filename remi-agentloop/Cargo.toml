@@ -14,7 +14,7 @@ http-client = [
     "tokio/full",
 ]
 http-server = ["remi-transport/http-server", "tokio/full"]
-tracing-langsmith = ["http-client"]
+tracing-langsmith = ["http-client", "remi-core/tracing-langsmith"]
 tool-bash = ["remi-tool/tool-bash"]
 tool-bash-virtual = ["remi-tool/tool-bash-virtual"]
 tool-fs = ["remi-tool/tool-fs"]
@@ -23,7 +23,7 @@ tools = ["remi-tool/tools"]
 tui = ["dep:ratatui", "dep:crossterm", "http-client"]
 
 [dependencies]
-remi-core = { path = "../remi-core" }
+remi-core = { path = "../remi-core", default-features = false }
 remi-transport = { path = "../remi-transport" }
 remi-model = { path = "../remi-model" }
 remi-tool = { path = "../remi-tool" }
@@ -64,4 +64,12 @@ required-features = ["http-client"]
 
 [[example]]
 name = "step_external_tools"
+required-features = ["http-client"]
+
+[[example]]
+name = "calculator_sse_server"
+required-features = ["http-server", "http-client"]
+
+[[example]]
+name = "calculator_sse_client"
 required-features = ["http-client"]

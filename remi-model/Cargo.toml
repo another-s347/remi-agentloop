@@ -10,7 +10,7 @@ default = []
 http-client = ["remi-transport/http-client"]
 
 [dependencies]
-remi-core = { path = "../remi-core" }
+remi-core = { path = "../remi-core", default-features = false }
 remi-transport = { path = "../remi-transport" }
 
 futures = { workspace = true }

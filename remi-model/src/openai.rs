@@ -32,6 +32,8 @@ struct OAIChoice {
 struct OAIDelta {
     role: Option<String>,
     content: Option<String>,
+    /// Thinking/reasoning content from models like Kimi K2.5 or DeepSeek-R1.
+    reasoning_content: Option<String>,
     tool_calls: Option<Vec<OAIToolCallDelta>>,
 }
 
@@ -214,6 +216,11 @@ impl<T: HttpTransport> Agent for OpenAIClient<T> {
                                     };
                                 }
                                 for choice in &chunk.choices {
+                                    if let Some(rc) = &choice.delta.reasoning_content {
+                                        if !rc.is_empty() {
+                                            yield ChatResponseChunk::ReasoningDelta { content: rc.clone() };
+                                        }
+                                    }
                                     if let Some(content) = &choice.delta.content {
                                         if !content.is_empty() {
                                             let role = choice.delta.role.as_deref().map(|r| match r {

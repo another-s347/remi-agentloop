@@ -1,4 +1,8 @@
-//! `remi build` — compile a remi-agentloop agent lib into WASM targets.
+//! remi — Remi agent toolchain.
+//!
+//! Subcommands:
+//!   remi build  — compile an agent crate into WASM targets (wasip2, web, or both)
+//!   remi dev    — hot-reloading WASM agent dev server (requires `--features dev`)
 //!
 //! Usage:
 //! ```sh
@@ -6,21 +10,19 @@
 //! remi build --agent ./my-agent --targets wasip2    # wasip2 only
 //! remi build --agent ./my-agent --targets web       # browser only
 //! remi build --agent ./my-agent --output ./dist     # custom output dir
-//! ```
 //!
-//! The agent crate must export a function with this signature:
-//! ```rust,ignore
-//! pub fn build_agent<T: HttpTransport>(oai: OpenAIClient<T>) -> impl Agent { .. }
+//! remi dev --agent ./my-agent --port 8080           # hot-reload dev server
 //! ```
-//!
-//! The CLI generates a temporary entry crate for each target, runs
-//! `cargo build` / `wasm-pack build`, and copies the output to `dist/`.
 
 use clap::{Parser, ValueEnum};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+#[cfg(feature = "dev")]
+mod dev;
 mod templates;
+#[cfg(feature = "dev")]
+mod ui;
 
 // ── CLI ──────────────────────────────────────────────────────────────────────
 
@@ -29,6 +31,16 @@ mod templates;
 enum Cli {
     /// Build an agent crate into WASM targets (wasip2, web, or both).
     Build(BuildArgs),
+
+    /// Start a hot-reloading WASM agent dev server (HTTP SSE).
+    ///
+    /// Compiles the agent with `remi build` on startup and re-compiles on every
+    /// source change, then hot-swaps the WASM module without restarting.
+    ///
+    /// Only available when the `dev` feature is enabled:
+    ///   cargo install --path remi-cli --features dev
+    #[cfg(feature = "dev")]
+    Dev(dev::DevArgs),
 }
 
 #[derive(Parser)]
@@ -67,9 +79,14 @@ enum Target {
 // ── Main ─────────────────────────────────────────────────────────────────────
 
 fn main() {
-    let Cli::Build(args) = Cli::parse();
+    match Cli::parse() {
+        Cli::Build(args) => run_build(args),
+        #[cfg(feature = "dev")]
+        Cli::Dev(args) => dev::run(args),
+    }
+}
 
-    // Resolve paths
+fn run_build(args: BuildArgs) {
     let agent_path = std::fs::canonicalize(&args.agent).unwrap_or_else(|e| {
         eprintln!("Error: cannot find agent crate at {:?}: {e}", args.agent);
         std::process::exit(1);
@@ -182,7 +199,10 @@ fn build_wasip2(
         cmd.arg("--release");
     }
 
-    println!("  Running: cargo build --target wasm32-wasip2 {}", if release { "--release" } else { "" });
+    println!(
+        "  Running: cargo build --target wasm32-wasip2 {}",
+        if release { "--release" } else { "" }
+    );
     let status = cmd.status();
     match status {
         Ok(s) if s.success() => {
@@ -192,12 +212,19 @@ fn build_wasip2(
                 .join("target")
                 .join("wasm32-wasip2")
                 .join(profile)
-                .join(format!("{}_wasip2_entry.wasm", agent_name.replace('-', "_")));
+                .join(format!(
+                    "{}_wasip2_entry.wasm",
+                    agent_name.replace('-', "_")
+                ));
             let dest = output.join(format!("{agent_name}.wasm"));
             if wasm_file.exists() {
                 std::fs::copy(&wasm_file, &dest).unwrap();
                 let size = std::fs::metadata(&dest).unwrap().len();
-                println!("  ✅ wasip2: {} ({:.0} KB)", dest.display(), size as f64 / 1024.0);
+                println!(
+                    "  ✅ wasip2: {} ({:.0} KB)",
+                    dest.display(),
+                    size as f64 / 1024.0
+                );
                 true
             } else {
                 eprintln!("  ❌ Expected output not found: {}", wasm_file.display());
@@ -268,7 +295,10 @@ fn build_web(
         cmd.arg("--release");
     }
 
-    println!("  Running: wasm-pack build --target web {}", if release { "--release" } else { "" });
+    println!(
+        "  Running: wasm-pack build --target web {}",
+        if release { "--release" } else { "" }
+    );
     let status = cmd.status();
     match status {
         Ok(s) if s.success() => {
@@ -322,10 +352,12 @@ fn read_crate_name(crate_path: &Path) -> String {
         eprintln!("Error: cannot read {:?}: {e}", cargo_toml);
         std::process::exit(1);
     });
-    let doc = content.parse::<toml_edit::DocumentMut>().unwrap_or_else(|e| {
-        eprintln!("Error: cannot parse {:?}: {e}", cargo_toml);
-        std::process::exit(1);
-    });
+    let doc = content
+        .parse::<toml_edit::DocumentMut>()
+        .unwrap_or_else(|e| {
+            eprintln!("Error: cannot parse {:?}: {e}", cargo_toml);
+            std::process::exit(1);
+        });
     doc["package"]["name"]
         .as_str()
         .unwrap_or_else(|| {

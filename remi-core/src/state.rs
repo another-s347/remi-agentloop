@@ -25,9 +25,8 @@ use crate::error::AgentError;
 use crate::model::ChatModel;
 use crate::tool::ToolDefinition;
 use crate::types::{
-    ChatRequest, ChatResponseChunk, Content, Message, ParsedToolCall,
-    StreamOptions, ToolCallMessage, ToolCallOutcome, FunctionCall,
-    ThreadId, RunId,
+    ChatRequest, ChatResponseChunk, Content, FunctionCall, Message, ParsedToolCall, RunId,
+    StreamOptions, ThreadId, ToolCallMessage, ToolCallOutcome,
 };
 
 // ── AgentState ────────────────────────────────────────────────────────────────
@@ -160,9 +159,7 @@ pub enum AgentPhase {
     /// Ready for a new step (user message or tool results).
     Ready,
     /// Model requested tool calls — caller should execute and respond.
-    AwaitingToolExecution {
-        tool_calls: Vec<ParsedToolCall>,
-    },
+    AwaitingToolExecution { tool_calls: Vec<ParsedToolCall> },
     /// Conversation complete.
     Done,
     /// An error occurred.
@@ -193,13 +190,32 @@ pub enum Action {
 pub enum StepEvent {
     // ── streaming deltas ──
     TextDelta(String),
-    ToolCallStart { id: String, name: String },
-    ToolCallArgumentsDelta { id: String, delta: String },
-    Usage { prompt_tokens: u32, completion_tokens: u32 },
+    /// Emitted once when the first reasoning/thinking chunk arrives from a thinking model.
+    /// All events until `ReasoningEnd` conceptually occur "inside" the thinking phase.
+    ReasoningStart,
+    /// Emitted when reasoning is complete (transition to content/tools or stream done).
+    /// Carries the full accumulated chain-of-thought text.
+    ReasoningEnd {
+        content: String,
+    },
+    ToolCallStart {
+        id: String,
+        name: String,
+    },
+    ToolCallArgumentsDelta {
+        id: String,
+        delta: String,
+    },
+    Usage {
+        prompt_tokens: u32,
+        completion_tokens: u32,
+    },
 
     // ── terminal (exactly one, always last) ──
     /// Model responded with text; no tool calls.
-    Done { state: AgentState },
+    Done {
+        state: AgentState,
+    },
     /// Model requested tool calls. Execute externally, then call
     /// `step(state, Action::ToolResults(..), model)`.
     NeedToolExecution {
@@ -207,7 +223,10 @@ pub enum StepEvent {
         tool_calls: Vec<ParsedToolCall>,
     },
     /// An error occurred.
-    Error { state: AgentState, error: AgentError },
+    Error {
+        state: AgentState,
+        error: AgentError,
+    },
 }
 
 // ── Internal accumulator ──────────────────────────────────────────────────────
@@ -259,6 +278,7 @@ pub fn step<M: ChatModel>(
                     content,
                     tool_calls: None,
                     tool_call_id: None,
+                    reasoning_content: None,
                 });
             }
             Action::ToolResults(outcomes) => {
@@ -308,14 +328,32 @@ pub fn step<M: ChatModel>(
         let mut tool_accumulators: Vec<ToolCallAccumulator> = Vec::new();
         let mut index_map: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
         let mut text_parts: Vec<String> = Vec::new();
+        let mut reasoning_parts: Vec<String> = Vec::new();
+        // Bracket tracking: emit ReasoningStart on first chunk, ReasoningEnd on transition.
+        let mut reasoning_open = false; // ReasoningStart emitted, ReasoningEnd not yet
 
         while let Some(chunk) = chat_stream.next().await {
             match chunk {
+                ChatResponseChunk::ReasoningDelta { content } => {
+                    if !reasoning_open {
+                        reasoning_open = true;
+                        yield StepEvent::ReasoningStart;
+                    }
+                    reasoning_parts.push(content);
+                }
                 ChatResponseChunk::Delta { content, .. } => {
+                    if reasoning_open {
+                        reasoning_open = false;
+                        yield StepEvent::ReasoningEnd { content: reasoning_parts.join("") };
+                    }
                     text_parts.push(content.clone());
                     yield StepEvent::TextDelta(content);
                 }
                 ChatResponseChunk::ToolCallStart { index, id, name } => {
+                    if reasoning_open {
+                        reasoning_open = false;
+                        yield StepEvent::ReasoningEnd { content: reasoning_parts.join("") };
+                    }
                     yield StepEvent::ToolCallStart { id: id.clone(), name: name.clone() };
                     let pos = tool_accumulators.len();
                     tool_accumulators.push(ToolCallAccumulator { index, id, name, arguments: String::new() });
@@ -340,10 +378,19 @@ pub fn step<M: ChatModel>(
 
         // ── 5. Terminal event ────────────────────────────────────────
 
+        // Close reasoning block if model ended without emitting content/tools
+        if reasoning_open {
+            yield StepEvent::ReasoningEnd { content: reasoning_parts.join("") };
+        }
+
+        let reasoning_content = if reasoning_parts.is_empty() { None } else { Some(reasoning_parts.join("")) };
+
         if tool_accumulators.is_empty() {
             // No tool calls — assistant text response
             let text = text_parts.join("");
-            state.messages.push(Message::assistant(&text));
+            let mut msg = Message::assistant(&text);
+            msg.reasoning_content = reasoning_content;
+            state.messages.push(msg);
             state.phase = AgentPhase::Done;
             yield StepEvent::Done { state };
         } else {
@@ -360,7 +407,7 @@ pub fn step<M: ChatModel>(
             }).collect();
 
             let text = text_parts.join("");
-            state.messages.push(Message::assistant_with_tool_calls(text, tool_call_messages));
+            state.messages.push(Message::assistant_with_tool_calls(text, tool_call_messages, reasoning_content));
 
             let parsed: Vec<ParsedToolCall> = tool_accumulators.into_iter()
                 .map(|tc| ParsedToolCall {

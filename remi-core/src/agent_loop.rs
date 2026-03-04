@@ -18,10 +18,10 @@
 //! `AgentLoop` implements the [`Agent`] trait, so it can be freely
 //! composed with adapters (Logging, Retry, TracingLayer, etc.).
 
-#[cfg(target_arch = "wasm32")]
-use web_time::Instant;
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::Instant;
+#[cfg(target_arch = "wasm32")]
+use web_time::Instant;
 
 use async_stream::stream;
 use futures::{Stream, StreamExt};
@@ -34,8 +34,8 @@ use crate::state::{step, Action, AgentState, StepConfig, StepEvent};
 use crate::tool::registry::ToolRegistry;
 use crate::tool::{ToolOutput, ToolResult};
 use crate::tracing::{
-    DynTracer, InterruptTrace, ModelEndTrace, ModelStartTrace, RunEndTrace, RunStartTrace,
-    RunStatus, ToolCallTrace, ToolEndTrace, ToolStartTrace, TurnStartTrace,
+    DynTracer, InterruptTrace, ModelEndTrace, ModelStartTrace, ResumeTrace, RunEndTrace,
+    RunStartTrace, RunStatus, ToolCallTrace, ToolEndTrace, ToolStartTrace, TurnStartTrace,
 };
 use crate::types::{AgentEvent, InterruptInfo, Message, ParsedToolCall, ToolCallOutcome};
 
@@ -186,6 +186,12 @@ impl<M: ChatModel> AgentLoop<M> {
                         StepEvent::TextDelta(text) => {
                             response_text.push_str(&text);
                             yield AgentEvent::TextDelta(text);
+                        }
+                        StepEvent::ReasoningStart => {
+                            yield AgentEvent::ThinkingStart;
+                        }
+                        StepEvent::ReasoningEnd { content } => {
+                            yield AgentEvent::ThinkingEnd { content };
                         }
                         StepEvent::ToolCallStart { id, name } => {
                             yield AgentEvent::ToolCallStart { id, name };
@@ -355,6 +361,7 @@ impl<M: ChatModel> AgentLoop<M> {
                                                 tool_name: tc.name.clone(),
                                                 result: Some(msg.clone()),
                                                 interrupted: false,
+                                                error: Some(msg.clone()),
                                                 duration: tool_exec_start.elapsed(),
                                                 timestamp: chrono::Utc::now(),
                                             }).await;
@@ -375,6 +382,7 @@ impl<M: ChatModel> AgentLoop<M> {
                                                 tool_name: tc.name.clone(),
                                                 result: None,
                                                 interrupted: true,
+                                                error: None,
                                                 duration: tool_exec_start.elapsed(),
                                                 timestamp: chrono::Utc::now(),
                                             }).await;
@@ -417,6 +425,7 @@ impl<M: ChatModel> AgentLoop<M> {
                                                     tool_name: tc.name.clone(),
                                                     result: Some(result.clone()),
                                                     interrupted: false,
+                                                    error: None,
                                                     duration: tool_exec_start.elapsed(),
                                                     timestamp: chrono::Utc::now(),
                                                 }).await;
@@ -576,6 +585,16 @@ impl<M: ChatModel> crate::agent::Agent for AgentLoop<M> {
                     Box::pin(self.run(state, action, true))
                 }
                 crate::types::LoopInput::Resume { state, results } => {
+                    // Emit on_resume before the stream starts so LangSmith
+                    // (and any other tracer) can reactivate the run record.
+                    if let Some(t) = self.tracer.as_deref() {
+                        t.on_resume(&ResumeTrace {
+                            run_id: state.run_id.clone(),
+                            payloads_count: results.len(),
+                            timestamp: chrono::Utc::now(),
+                        })
+                        .await;
+                    }
                     Box::pin(self.run(state, Action::ToolResults(results), false))
                 }
                 crate::types::LoopInput::Cancel { mut state } => {

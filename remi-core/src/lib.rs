@@ -49,7 +49,7 @@ pub mod prelude {
     pub use crate::error::AgentError;
     pub use crate::interrupt::{InterruptHandler, InterruptRouter};
     pub use crate::model::ChatModel;
-    pub use crate::protocol::{ProtocolAgent, ProtocolError, ProtocolEvent};
+    pub use crate::protocol::{CustomProtocolEvent, ProtocolAgent, ProtocolError, ProtocolEvent};
     pub use crate::state::{step, Action, AgentPhase, AgentState, StepConfig, StepEvent};
     pub use crate::tool::{
         registry::{DefaultToolRegistry, ToolRegistry},

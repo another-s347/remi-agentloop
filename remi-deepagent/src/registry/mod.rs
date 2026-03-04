@@ -1,0 +1,150 @@
+//! `FileBackedRegistry` — a tool registry wrapper that auto-spills long tool
+//! outputs to files instead of stranding them in the LLM context window.
+//!
+//! When a tool's `ToolOutput::Result` exceeds `threshold_bytes`, the content is
+//! written to `output_dir/<tool_call_id>.txt` and a short pointer message is
+//! returned instead:
+//!
+//! ```text
+//! [Output too long (12345 bytes). Saved to .deepagent/tool-results/abc.txt.
+//!  Use fs_read to view it.]
+//! ```
+//!
+//! The agent can then use `fs_read` to retrieve sections of the output.
+
+use futures::StreamExt;
+use remi_core::error::AgentError;
+use remi_core::tool::registry::ToolRegistry;
+use remi_core::tool::{BoxedToolResult, Tool, ToolContext, ToolDefinition, ToolOutput};
+use remi_core::types::{ParsedToolCall, ResumePayload};
+use std::collections::HashMap;
+use std::future::Future;
+use std::path::{Path, PathBuf};
+use std::pin::Pin;
+use uuid::Uuid;
+
+// ── FileBackedRegistry ────────────────────────────────────────────────────────
+
+/// Wraps any [`ToolRegistry`] and captures oversized outputs to disk.
+pub struct FileBackedRegistry<R> {
+    inner: R,
+    /// Output file length threshold in bytes (default 4 KiB).
+    pub threshold_bytes: usize,
+    /// Directory where oversized outputs are written (default `.deepagent/tool-results`).
+    pub output_dir: PathBuf,
+}
+
+impl<R: ToolRegistry> FileBackedRegistry<R> {
+    pub fn new(inner: R) -> Self {
+        Self {
+            inner,
+            threshold_bytes: 4096,
+            output_dir: PathBuf::from(".deepagent/tool-results"),
+        }
+    }
+
+    pub fn threshold(mut self, bytes: usize) -> Self {
+        self.threshold_bytes = bytes;
+        self
+    }
+
+    pub fn output_dir(mut self, dir: impl Into<PathBuf>) -> Self {
+        self.output_dir = dir.into();
+        self
+    }
+}
+
+impl<R: ToolRegistry> ToolRegistry for FileBackedRegistry<R> {
+    fn definitions(&self, user_state: &serde_json::Value) -> Vec<ToolDefinition> {
+        self.inner.definitions(user_state)
+    }
+
+    fn is_empty(&self) -> bool {
+        self.inner.is_empty()
+    }
+
+    fn contains(&self, name: &str) -> bool {
+        self.inner.contains(name)
+    }
+
+    fn execute_parallel<'a>(
+        &'a self,
+        calls: &'a [ParsedToolCall],
+        resume_map: &'a HashMap<String, ResumePayload>,
+        ctx: &'a ToolContext,
+    ) -> Pin<Box<dyn Future<Output = Vec<(String, Result<BoxedToolResult<'a>, AgentError>)>> + 'a>>
+    {
+        Box::pin(async move {
+            let inner_results =
+                self.inner.execute_parallel(calls, resume_map, ctx).await;
+
+            let mut out = Vec::with_capacity(inner_results.len());
+
+            for (call_id, result) in inner_results {
+                let new_result: Result<BoxedToolResult<'a>, AgentError> = match result {
+                    Err(e) => Err(e),
+                    Ok(remi_core::tool::ToolResult::Interrupt(req)) => {
+                        Ok(remi_core::tool::ToolResult::Interrupt(req))
+                    }
+                    Ok(remi_core::tool::ToolResult::Output(mut stream)) => {
+                        // Collect the full stream
+                        let mut deltas: Vec<String> = Vec::new();
+                        let mut final_result: Option<String> = None;
+                        while let Some(item) = stream.next().await {
+                            match item {
+                                ToolOutput::Delta(d) => deltas.push(d),
+                                ToolOutput::Result(r) => final_result = Some(r),
+                            }
+                        }
+
+                        let new_result_str = if let Some(result_str) = final_result {
+                            if result_str.len() > self.threshold_bytes {
+                                // Write to file
+                                let short_id = &call_id[..call_id.len().min(8)];
+                                let fname = format!("{short_id}.txt");
+                                let fpath = self.output_dir.join(&fname);
+                                match spill_to_file(&fpath, &result_str).await {
+                                    Ok(()) => {
+                                        format!(
+                                            "[Output too long ({} bytes). Saved to {}. \
+                                             Use fs_read to view it.]",
+                                            result_str.len(),
+                                            fpath.display()
+                                        )
+                                    }
+                                    Err(_) => result_str, // fallback: return as-is
+                                }
+                            } else {
+                                result_str
+                            }
+                        } else {
+                            String::new()
+                        };
+
+                        // Reconstruct a static stream
+                        let new_result_str: String = new_result_str;
+                        let deltas_owned: Vec<String> = deltas;
+                        let s = async_stream::stream! {
+                            for d in deltas_owned {
+                                yield ToolOutput::Delta(d);
+                            }
+                            yield ToolOutput::Result(new_result_str);
+                        };
+                        let boxed: remi_core::tool::BoxedToolStream<'a> = Box::pin(s);
+                        Ok(remi_core::tool::ToolResult::Output(boxed))
+                    }
+                };
+                out.push((call_id, new_result));
+            }
+
+            out
+        })
+    }
+}
+
+async fn spill_to_file(path: &Path, content: &str) -> Result<(), std::io::Error> {
+    if let Some(parent) = path.parent() {
+        tokio::fs::create_dir_all(parent).await?;
+    }
+    tokio::fs::write(path, content).await
+}

@@ -1,27 +1,305 @@
 package remi:agentloop;
 
-/// Agent interface — the standard way for WASM guest agents to communicate.
-///
-/// Uses the Component Model resource pattern for streaming:
-/// `chat()` returns an `event-stream` resource, and the host pulls
-/// events by calling `next()` until it returns `none`.
-interface agent {
-    /// A stream of JSON-encoded ProtocolEvent chunks.
+// ── Shared type definitions ──────────────────────────────────────────────────
+//
+// All structured protocol types are defined here as WIT records/variants.
+// Fields that are intentionally open-ended (user_state, metadata, extra_data)
+// are kept as JSON strings to avoid a lossy encoding.
+
+// ── Host-provided agent configuration ───────────────────────────────────────
+//
+// The guest imports this interface and calls `get-config` at any time to pull
+// the current configuration from the host.  This enables dynamic config
+// updates without restarting the component.
+
+interface config {
+    /// Full agent runtime configuration provided by the host.
     ///
-    /// The host calls `next()` repeatedly:
-    /// - `some(json)` → next event (a serialized ProtocolEvent)
-    /// - `none`       → stream finished
-    resource event-stream {
-        next: func() -> option<string>;
+    /// Open-ended fields (`headers`, `extra`) are JSON-encoded strings so that
+    /// the WIT ABI doesn't need to enumerate every possible key.
+    record agent-config {
+        api-key: option<string>,
+        model: option<string>,
+        base-url: option<string>,
+        temperature: option<f64>,
+        max-tokens: option<u32>,
+        timeout-ms: option<u64>,
+        /// JSON-serialised `HashMap<String, String>` of extra HTTP headers.
+        headers-json: option<string>,
+        /// JSON-serialised `serde_json::Value` for arbitrary extra fields.
+        extra-json: option<string>,
     }
 
-    /// Process a chat request and return a stream of events.
+    /// Pull the current agent configuration from the host.
     ///
-    /// `input-json` is a JSON-encoded `LoopInput`.
-    /// Returns an `event-stream` resource on success, or an error string.
-    chat: func(input-json: string) -> result<event-stream, string>;
+    /// The host resolves this lazily on each call, so the guest always receives
+    /// the most up-to-date values (e.g. after a live config reload).
+    get-config: func() -> agent-config;
+}
+
+// ── Guest version information ────────────────────────────────────────────────
+//
+// The runner calls these before the first `chat()` to validate compatibility.
+// Compatibility rule:
+//   - `guest.api-version.major == HOST_API_VERSION.major`
+//   - `guest.min-host-version <= HOST_API_VERSION`
+
+interface agent-info {
+    /// Semantic version triple.
+    record api-version {
+        major: u32,
+        minor: u32,
+        patch: u32,
+    }
+
+    /// The API version this guest was compiled against.
+    get-api-version: func() -> api-version;
+
+    /// The minimum host version this guest requires.
+    ///
+    /// The runner returns an error if its own version is lower than this.
+    get-min-host-version: func() -> api-version;
+}
+
+// ── Agent protocol interface ─────────────────────────────────────────────────
+//
+// All domain types are defined inline here so both `wit_bindgen` (guest) and
+// `wasmtime::component::bindgen!` (host) generate from a self-contained block.
+
+interface agent {
+    // ── Multimodal content ───────────────────────────────────────────────────
+
+    record image-url-detail {
+        url: string,
+        detail: option<string>,
+    }
+
+    record audio-detail {
+        data: string,
+        format: string,
+    }
+
+    /// A single content part inside a multimodal message.
+    ///
+    /// `file-json` is a JSON-encoded `ContentPart::File { .. }` blob.
+    variant content-part {
+        text(string),
+        image-url(image-url-detail),
+        /// (media_type, base64_data)
+        image-base64(tuple<string, string>),
+        audio(audio-detail),
+        /// Catch-all for file parts and future part types.
+        file-json(string),
+    }
+
+    variant content {
+        text(string),
+        parts(list<content-part>),
+    }
+
+    // ── Messages ─────────────────────────────────────────────────────────────
+
+    record tool-call-message {
+        id: string,
+        call-type: string,
+        name: string,
+        arguments: string,
+    }
+
+    record message {
+        id: string,
+        role: string,
+        content: content,
+        tool-calls: option<list<tool-call-message>>,
+        tool-call-id: option<string>,
+    }
+
+    // ── Tool definitions & outcomes ──────────────────────────────────────────
+
+    record tool-definition {
+        name: string,
+        description: string,
+        /// JSON Schema for the tool's parameters.
+        parameters-schema-json: string,
+    }
+
+    record parsed-tool-call {
+        id: string,
+        name: string,
+        /// JSON-encoded `serde_json::Value` arguments map.
+        arguments-json: string,
+    }
+
+    record tool-call-result {
+        tool-call-id: string,
+        tool-name: string,
+        value: string,
+    }
+
+    record tool-call-error {
+        tool-call-id: string,
+        tool-name: string,
+        err-msg: string,
+    }
+
+    variant tool-call-outcome {
+        %result(tool-call-result),
+        %error(tool-call-error),
+    }
+
+    // ── Agent state ──────────────────────────────────────────────────────────
+
+    record step-config {
+        model: string,
+        temperature: option<f64>,
+        max-tokens: option<u32>,
+        /// JSON-encoded `serde_json::Value` metadata blob.
+        metadata-json: option<string>,
+    }
+
+    record agent-state {
+        messages: list<message>,
+        system-prompt: option<string>,
+        tool-definitions: list<tool-definition>,
+        config: step-config,
+        thread-id: string,
+        run-id: string,
+        turn: u32,
+        /// JSON-encoded `AgentPhase` (open enum — kept as string).
+        phase-json: string,
+        /// JSON-encoded user-controlled state blob.
+        user-state-json: string,
+    }
+
+    record interrupt-info {
+        interrupt-id: string,
+        tool-call-id: string,
+        tool-name: string,
+        kind: string,
+        /// JSON-encoded interrupt data blob.
+        data-json: string,
+    }
+
+    // ── LoopInput (what the host sends to the guest) ─────────────────────────
+
+    record loop-input-start {
+        content: content,
+        history: list<message>,
+        extra-tools: list<tool-definition>,
+        model: option<string>,
+        temperature: option<f64>,
+        max-tokens: option<u32>,
+        /// JSON-encoded metadata blob.
+        metadata-json: option<string>,
+    }
+
+    record loop-input-resume {
+        state: agent-state,
+        results: list<tool-call-outcome>,
+    }
+
+    variant loop-input {
+        start(loop-input-start),
+        resume(loop-input-resume),
+    }
+
+    // ── ProtocolEvent variants ───────────────────────────────────────────────
+
+    record run-start-event {
+        thread-id: string,
+        run-id: string,
+        metadata-json: option<string>,
+    }
+
+    record delta-event {
+        content: string,
+        role: option<string>,
+    }
+
+    record tool-call-start-event {
+        id: string,
+        name: string,
+    }
+
+    record tool-call-delta-event {
+        id: string,
+        arguments-delta: string,
+    }
+
+    record tool-delta-event {
+        id: string,
+        name: string,
+        delta: string,
+    }
+
+    record tool-result-event {
+        id: string,
+        name: string,
+        value: string,
+    }
+
+    record interrupt-event {
+        interrupts: list<interrupt-info>,
+    }
+
+    record turn-start-event {
+        turn: u32,
+    }
+
+    record usage-event {
+        prompt-tokens: u32,
+        completion-tokens: u32,
+    }
+
+    record error-event {
+        message: string,
+        code: option<string>,
+    }
+
+    record need-tool-execution-event {
+        state: agent-state,
+        tool-calls: list<parsed-tool-call>,
+        completed-results: list<tool-call-outcome>,
+    }
+
+    /// Typed union of all protocol events streamed from guest to host.
+    variant protocol-event {
+        run-start(run-start-event),
+        delta(delta-event),
+        tool-call-start(tool-call-start-event),
+        tool-call-delta(tool-call-delta-event),
+        tool-delta(tool-delta-event),
+        tool-result(tool-result-event),
+        interrupt(interrupt-event),
+        turn-start(turn-start-event),
+        usage(usage-event),
+        %error(error-event),
+        /// Normal end of stream.
+        done,
+        need-tool-execution(need-tool-execution-event),
+    }
+
+    // ── Streaming resource ───────────────────────────────────────────────────
+
+    /// A pull-based stream of typed protocol events.
+    ///
+    /// The host calls `next()` repeatedly until it returns `none`.
+    resource event-stream {
+        next: func() -> option<protocol-event>;
+    }
+
+    /// Process a chat request and return a typed event stream.
+    ///
+    /// Returns `err(string)` on initialisation failure; individual event-level
+    /// errors are streamed as `protocol-event::error(...)`.
+    chat: func(input: loop-input) -> result<event-stream, string>;
 }
 
 world agent-world {
+    /// Host injects agent configuration; guest pulls it on demand.
+    import config;
+    /// Typed streaming agent protocol.
     export agent;
+    /// Guest version advertisement for runner compatibility checks.
+    export agent-info;
 }

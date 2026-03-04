@@ -507,6 +507,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 assistant_content.push_str(&text);
             }
 
+            AgentEvent::ThinkingStart => {
+                // Thinking models: silently ignore in non-interactive CLI.
+            }
+
+            AgentEvent::ThinkingEnd { .. } => {
+                // Full reasoning content available but not displayed in CLI mode.
+            }
+
             AgentEvent::ToolCallStart { id, name } => {
                 if !printed_newline {
                     println!();
