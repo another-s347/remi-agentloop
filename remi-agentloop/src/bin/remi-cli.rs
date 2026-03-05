@@ -542,8 +542,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .map(|d| format!("{:.2}s", d.as_secs_f64()))
                     .unwrap_or_default();
 
-                let display_result = if result.len() > 200 {
-                    format!("{}…  [{} chars]", &result[..200], result.len())
+                let display_result = if result.chars().count() > 200 {
+                    format!("{}…  [{} chars]", result.chars().take(200).collect::<String>(), result.len())
                 } else {
                     result.clone()
                 };

@@ -38,3 +38,5 @@ flycheck0/
 
 # Test / scratch files
 test-memory.json
+deep-agent.toml
+.deepagent/

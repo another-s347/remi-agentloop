@@ -30,9 +30,7 @@ use std::io;
 use std::time::Duration;
 
 use crossterm::{
-    event::{
-        DisableMouseCapture, EnableMouseCapture, Event, EventStream, KeyCode, KeyModifiers,
-    },
+    event::{DisableMouseCapture, EnableMouseCapture, Event, EventStream, KeyCode, KeyModifiers},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -45,6 +43,8 @@ use ratatui::{
     widgets::{Block, Borders, List, ListItem, Paragraph, Wrap},
     Frame, Terminal,
 };
+use remi_core::types::Message as AgentMessage;
+use remi_deepagent::skill::store::FileSkillStore;
 use remi_deepagent::{DeepAgentBuilder, DeepAgentConfig, DeepAgentEvent, SkillEvent, TodoEvent};
 use remi_model::OpenAIClient;
 use remi_transport::ReqwestTransport;
@@ -58,17 +58,37 @@ use tokio::sync::mpsc;
 #[derive(Debug)]
 enum AgentMsg {
     TextDelta(String),
-    ToolCallStart { name: String },
+    ToolCallStart {
+        name: String,
+    },
     ToolCallArgsDelta(String),
-    ToolResult { name: String, result: String },
-    TodoAdded { id: u64, content: String },
-    TodoCompleted { id: u64 },
-    TodoUpdated { id: u64, content: String },
-    TodoRemoved { id: u64 },
+    ToolResult {
+        name: String,
+        result: String,
+    },
+    TodoAdded {
+        id: u64,
+        content: String,
+    },
+    TodoCompleted {
+        id: u64,
+    },
+    TodoUpdated {
+        id: u64,
+        content: String,
+    },
+    TodoRemoved {
+        id: u64,
+    },
     SkillSaved(String),
     SkillDeleted(String),
     TurnStart(usize),
-    Usage { prompt: u32, completion: u32 },
+    Usage {
+        prompt: u32,
+        completion: u32,
+    },
+    /// Full conversation history returned at end of each run.
+    History(Vec<AgentMessage>),
     Done,
     Error(String),
 }
@@ -92,12 +112,12 @@ enum AppMode {
 /// A single entry in the chat history area.
 enum ChatLine {
     UserMsg(String),
-    AgentText(String),   // completed chunk
-    ToolStart(String),   // "▶ name("
-    ToolArgs(String),    // inline args
-    ToolEnd,             // ")"
+    AgentText(String),          // completed chunk
+    ToolStart(String),          // "▶ name("
+    ToolArgs(String),           // inline args
+    ToolEnd,                    // ")"
     ToolResult(String, String), // (name, result_preview)
-    SystemMsg(String),   // turn headers, status msgs
+    SystemMsg(String),          // turn headers, status msgs
 }
 
 struct TodoItem {
@@ -132,6 +152,21 @@ struct App {
     input: String,
     cursor: usize,
 
+    // Input history (Up/Down to navigate)
+    input_history: Vec<String>, // oldest … newest
+    history_idx: Option<usize>, // None = not browsing; Some(i) = showing history[i]
+    input_draft: String,        // saved current input while browsing history
+
+    // Cancellation
+    cancel_tx: Option<tokio::sync::oneshot::Sender<()>>,
+    last_ctrl_c: Option<std::time::Instant>,
+
+    // Workspace path (for auto-saving memory)
+    workspace_dir: std::path::PathBuf,
+
+    // Conversation history carried between runs
+    last_history: Vec<AgentMessage>,
+
     // Status
     turn: usize,
     model: String,
@@ -142,7 +177,7 @@ struct App {
 }
 
 impl App {
-    fn new(model: String) -> Self {
+    fn new(model: String, workspace_dir: std::path::PathBuf) -> Self {
         Self {
             chat: vec![ChatLine::SystemMsg(
                 "Type a message and press Enter to start.  Ctrl+C to quit.".into(),
@@ -161,6 +196,17 @@ impl App {
 
             input: String::new(),
             cursor: 0,
+
+            input_history: vec![],
+            history_idx: None,
+            input_draft: String::new(),
+
+            cancel_tx: None,
+            last_ctrl_c: None,
+
+            workspace_dir,
+
+            last_history: vec![],
 
             turn: 0,
             model,
@@ -199,7 +245,55 @@ impl App {
 
     fn input_take(&mut self) -> String {
         self.cursor = 0;
-        std::mem::take(&mut self.input)
+        self.history_idx = None;
+        self.input_draft.clear();
+        let msg = std::mem::take(&mut self.input);
+        // Push to history (skip consecutive duplicates)
+        if self.input_history.last().map(|s| s.as_str()) != Some(&msg) {
+            self.input_history.push(msg.clone());
+        }
+        msg
+    }
+
+    fn history_up(&mut self) {
+        if self.input_history.is_empty() {
+            return;
+        }
+        match self.history_idx {
+            None => {
+                // Enter history mode: save draft, show last entry
+                self.input_draft = self.input.clone();
+                let idx = self.input_history.len() - 1;
+                self.history_idx = Some(idx);
+                self.input = self.input_history[idx].clone();
+                self.cursor = self.input.chars().count();
+            }
+            Some(0) => { /* already at oldest, do nothing */ }
+            Some(i) => {
+                let idx = i - 1;
+                self.history_idx = Some(idx);
+                self.input = self.input_history[idx].clone();
+                self.cursor = self.input.chars().count();
+            }
+        }
+    }
+
+    fn history_down(&mut self) {
+        match self.history_idx {
+            None => { /* not in history mode */ }
+            Some(i) if i + 1 >= self.input_history.len() => {
+                // Back to draft
+                self.history_idx = None;
+                self.input = self.input_draft.clone();
+                self.cursor = self.input.chars().count();
+            }
+            Some(i) => {
+                let idx = i + 1;
+                self.history_idx = Some(idx);
+                self.input = self.input_history[idx].clone();
+                self.cursor = self.input.chars().count();
+            }
+        }
     }
 
     // ── Stream buffer helpers ──────────────────────────────────────────────
@@ -221,6 +315,60 @@ impl App {
             }
             self.chat.push(ChatLine::ToolEnd);
         }
+    }
+
+    /// Auto-save the conversation to `<workspace>/memory.md`.
+    /// Called after every agent run (Done or Error).
+    fn auto_save_memory(&self) {
+        let memory_path = self.workspace_dir.join("memory.md");
+        let _ = std::fs::create_dir_all(&self.workspace_dir);
+
+        // Build markdown from all chat lines
+        let mut md = String::new();
+        for cl in &self.chat {
+            match cl {
+                ChatLine::UserMsg(m) => {
+                    md.push_str(&format!("\n## User\n{m}\n"));
+                }
+                ChatLine::AgentText(t) => {
+                    md.push_str(&format!("{t}\n"));
+                }
+                ChatLine::ToolStart(name) => {
+                    md.push_str(&format!("- **tool**: `{name}`("));
+                }
+                ChatLine::ToolArgs(args) => {
+                    let preview = if args.chars().count() > 200 {
+                        format!("{}…", args.chars().take(200).collect::<String>())
+                    } else {
+                        args.clone()
+                    };
+                    md.push_str(&preview);
+                }
+                ChatLine::ToolEnd => {
+                    md.push_str(")\n");
+                }
+                ChatLine::ToolResult(name, preview) => {
+                    md.push_str(&format!("- **result** `{name}`: {preview}\n"));
+                }
+                ChatLine::SystemMsg(s) => {
+                    // Skip boilerplate system msgs
+                    if s.starts_with("──") || s.starts_with("✓") || s.starts_with("✗") {
+                        md.push_str(&format!("\n---\n*{s}*\n"));
+                    }
+                }
+            }
+        }
+
+        // Truncate to keep the last ~32KB (avoid unbounded growth)
+        if md.len() > 32768 {
+            let start = md.len() - 32768;
+            // Find a clean line break to start from
+            if let Some(pos) = md[start..].find('\n') {
+                md = format!("(earlier history trimmed)\n\n{}", &md[start + pos + 1..]);
+            }
+        }
+
+        let _ = std::fs::write(&memory_path, md.as_bytes());
     }
 
     // ── Handle incoming agent events ───────────────────────────────────────
@@ -250,11 +398,18 @@ impl App {
             AgentMsg::ToolResult { name, result } => {
                 self.flush_streaming_tool();
                 let preview = if result.len() > 80 {
-                    format!("{}…", &result[..80])
+                    let cut = result
+                        .char_indices()
+                        .map(|(i, _)| i)
+                        .take_while(|&i| i <= 80)
+                        .last()
+                        .unwrap_or(0);
+                    format!("{}…", &result[..cut])
                 } else {
                     result.clone()
                 };
-                self.chat.push(ChatLine::ToolResult(name.clone(), preview.clone()));
+                self.chat
+                    .push(ChatLine::ToolResult(name.clone(), preview.clone()));
                 if let Some(idx) = self.current_tool {
                     if let Some(e) = self.tool_log.get_mut(idx) {
                         e.result = Some(preview);
@@ -263,7 +418,11 @@ impl App {
                 self.current_tool = None;
             }
             AgentMsg::TodoAdded { id, content } => {
-                self.todos.push(TodoItem { id, content, done: false });
+                self.todos.push(TodoItem {
+                    id,
+                    content,
+                    done: false,
+                });
             }
             AgentMsg::TodoCompleted { id } => {
                 if let Some(t) = self.todos.iter_mut().find(|t| t.id == id) {
@@ -290,10 +449,15 @@ impl App {
                 self.prompt_tokens = prompt;
                 self.completion_tokens = completion;
             }
+            AgentMsg::History(msgs) => {
+                self.last_history = msgs;
+            }
             AgentMsg::Done => {
                 self.flush_streaming_text();
                 self.flush_streaming_tool();
                 self.mode = AppMode::Idle;
+                self.cancel_tx = None;
+                self.auto_save_memory();
                 self.chat.push(ChatLine::SystemMsg("✓ Done.".into()));
                 self.auto_scroll = true;
             }
@@ -301,6 +465,8 @@ impl App {
                 self.flush_streaming_text();
                 self.flush_streaming_tool();
                 self.mode = AppMode::Idle;
+                self.cancel_tx = None;
+                self.auto_save_memory();
                 self.chat.push(ChatLine::SystemMsg(format!("✗ Error: {e}")));
             }
         }
@@ -319,10 +485,10 @@ fn render(app: &mut App, frame: &mut Frame) {
     let outer = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Min(5),      // chat + side panels
-            Constraint::Length(3),   // tool log
-            Constraint::Length(3),   // input
-            Constraint::Length(1),   // status bar
+            Constraint::Min(5),    // chat + side panels
+            Constraint::Length(3), // tool log
+            Constraint::Length(3), // input
+            Constraint::Length(1), // status bar
         ])
         .split(area);
 
@@ -358,7 +524,12 @@ fn render_chat(app: &mut App, frame: &mut Frame, area: Rect) {
             }
             ChatLine::UserMsg(m) => {
                 lines.push(Line::from(vec![
-                    Span::styled("You  ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+                    Span::styled(
+                        "You  ",
+                        Style::default()
+                            .fg(Color::Cyan)
+                            .add_modifier(Modifier::BOLD),
+                    ),
                     Span::raw(m.clone()),
                 ]));
             }
@@ -378,16 +549,26 @@ fn render_chat(app: &mut App, frame: &mut Frame, area: Rect) {
             ChatLine::ToolStart(name) => {
                 lines.push(Line::from(vec![
                     Span::styled("  ▶  ", Style::default().fg(Color::Yellow)),
-                    Span::styled(name.clone(), Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+                    Span::styled(
+                        name.clone(),
+                        Style::default()
+                            .fg(Color::Yellow)
+                            .add_modifier(Modifier::BOLD),
+                    ),
                     Span::raw("("),
                 ]));
             }
             ChatLine::ToolArgs(args) => {
-                // Truncate long args
-                let preview = if args.len() > inner_w.saturating_sub(7) {
-                    format!("{}…", &args[..inner_w.saturating_sub(8)])
-                } else {
-                    args.clone()
+                // Truncate long args — use char-boundary indexing to avoid
+                // panics on multi-byte (e.g. CJK) characters.
+                let max_chars = inner_w.saturating_sub(8);
+                let preview = {
+                    let mut chars = args.chars();
+                    let mut s: String = chars.by_ref().take(max_chars).collect();
+                    if chars.next().is_some() {
+                        s.push('…');
+                    }
+                    s
                 };
                 lines.push(Line::from(vec![
                     Span::raw("       "),
@@ -423,21 +604,30 @@ fn render_chat(app: &mut App, frame: &mut Frame, area: Rect) {
         // blinking cursor indicator
         lines.push(Line::from(Span::styled(
             "▍",
-            Style::default().fg(Color::White).add_modifier(Modifier::SLOW_BLINK),
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::SLOW_BLINK),
         )));
     } else if !app.streaming_tool_name.is_empty() {
         lines.push(Line::from(vec![
             Span::styled("  ▶  ", Style::default().fg(Color::Yellow)),
             Span::styled(
                 app.streaming_tool_name.clone(),
-                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
             ),
             Span::raw("("),
             Span::styled(
                 app.streaming_tool_args.clone(),
                 Style::default().fg(Color::Gray),
             ),
-            Span::styled("▍", Style::default().fg(Color::Yellow).add_modifier(Modifier::SLOW_BLINK)),
+            Span::styled(
+                "▍",
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::SLOW_BLINK),
+            ),
         ]));
     }
 
@@ -453,7 +643,10 @@ fn render_chat(app: &mut App, frame: &mut Frame, area: Rect) {
     }
 
     let block = Block::default()
-        .title(Span::styled(" 💬 Chat ", Style::default().add_modifier(Modifier::BOLD)))
+        .title(Span::styled(
+            " 💬 Chat ",
+            Style::default().add_modifier(Modifier::BOLD),
+        ))
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Blue));
 
@@ -484,13 +677,16 @@ fn render_todos(app: &App, frame: &mut Frame, area: Rect) {
         .map(|t| {
             let check = if t.done { "☑" } else { "☐" };
             let style = if t.done {
-                Style::default().fg(Color::DarkGray).add_modifier(Modifier::CROSSED_OUT)
+                Style::default()
+                    .fg(Color::DarkGray)
+                    .add_modifier(Modifier::CROSSED_OUT)
             } else {
                 Style::default().fg(Color::White)
             };
             let max_w = area.width.saturating_sub(7) as usize;
-            let content = if t.content.len() > max_w {
-                format!("{}…", &t.content[..max_w])
+            let content = if t.content.chars().count() > max_w {
+                let truncated: String = t.content.chars().take(max_w).collect();
+                format!("{}…", truncated)
             } else {
                 t.content.clone()
             };
@@ -511,7 +707,10 @@ fn render_todos(app: &App, frame: &mut Frame, area: Rect) {
 
     let list = List::new(items).block(
         Block::default()
-            .title(Span::styled(title, Style::default().add_modifier(Modifier::BOLD)))
+            .title(Span::styled(
+                title,
+                Style::default().add_modifier(Modifier::BOLD),
+            ))
             .borders(Borders::ALL)
             .border_style(Style::default().fg(Color::Magenta)),
     );
@@ -524,8 +723,9 @@ fn render_skills(app: &App, frame: &mut Frame, area: Rect) {
         .iter()
         .map(|s| {
             let max_w = area.width.saturating_sub(5) as usize;
-            let content = if s.len() > max_w {
-                format!("{}…", &s[..max_w])
+            let content = if s.chars().count() > max_w {
+                let truncated: String = s.chars().take(max_w).collect();
+                format!("{}…", truncated)
             } else {
                 s.clone()
             };
@@ -539,7 +739,10 @@ fn render_skills(app: &App, frame: &mut Frame, area: Rect) {
     let title = format!(" 💾 Skills ({}) ", app.skills.len());
     let list = List::new(items).block(
         Block::default()
-            .title(Span::styled(title, Style::default().add_modifier(Modifier::BOLD)))
+            .title(Span::styled(
+                title,
+                Style::default().add_modifier(Modifier::BOLD),
+            ))
             .borders(Borders::ALL)
             .border_style(Style::default().fg(Color::Yellow)),
     );
@@ -558,18 +761,26 @@ fn render_tool_log(app: &App, frame: &mut Frame, area: Rect) {
         }
         spans.push(Span::styled(
             entry.name.clone(),
-            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
         ));
         match &entry.result {
             Some(r) => {
                 spans.push(Span::raw("(…) → "));
-                let preview = if r.len() > 30 { format!("{}…", &r[..30]) } else { r.clone() };
+                let preview = if r.chars().count() > 30 {
+                    format!("{}…", r.chars().take(30).collect::<String>())
+                } else {
+                    r.clone()
+                };
                 spans.push(Span::styled(preview, Style::default().fg(Color::Green)));
             }
             None => {
                 spans.push(Span::styled(
                     "(…) ⟳",
-                    Style::default().fg(Color::Yellow).add_modifier(Modifier::SLOW_BLINK),
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::SLOW_BLINK),
                 ));
             }
         }
@@ -586,7 +797,10 @@ fn render_tool_log(app: &App, frame: &mut Frame, area: Rect) {
 
     let para = Paragraph::new(Line::from(spans)).block(
         Block::default()
-            .title(Span::styled(" 🔧 Tools ", Style::default().add_modifier(Modifier::BOLD)))
+            .title(Span::styled(
+                " 🔧 Tools ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ))
             .borders(Borders::ALL)
             .border_style(Style::default().fg(Color::DarkGray)),
     );
@@ -607,9 +821,9 @@ fn render_input(app: &App, frame: &mut Frame, area: Rect) {
 
     let (before_cursor, after_cursor) = {
         let chars: Vec<char> = display.chars().collect();
-        let cursor_in_display = app.cursor.saturating_sub(
-            app.input.len().saturating_sub(display.len()),
-        );
+        let cursor_in_display = app
+            .cursor
+            .saturating_sub(app.input.len().saturating_sub(display.len()));
         let before: String = chars[..cursor_in_display.min(chars.len())].iter().collect();
         let rest: String = chars[cursor_in_display.min(chars.len())..].iter().collect();
         (before, rest)
@@ -622,15 +836,28 @@ fn render_input(app: &App, frame: &mut Frame, area: Rect) {
     };
 
     let running_indicator = if app.mode == AppMode::Running {
-        Span::styled(" ⟳ running…", Style::default().fg(Color::Yellow).add_modifier(Modifier::SLOW_BLINK))
+        Span::styled(
+            " ⟳ running…",
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::SLOW_BLINK),
+        )
     } else {
         Span::styled(" ready", Style::default().fg(Color::DarkGray))
     };
 
     let line = Line::from(vec![
-        Span::styled("❯ ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            "❯ ",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ),
         Span::raw(before_cursor),
-        Span::styled(cursor_char, Style::default().bg(Color::White).fg(Color::Black)),
+        Span::styled(
+            cursor_char,
+            Style::default().bg(Color::White).fg(Color::Black),
+        ),
         Span::raw(after_cursor),
         running_indicator,
     ]);
@@ -643,7 +870,10 @@ fn render_input(app: &App, frame: &mut Frame, area: Rect) {
 
     let para = Paragraph::new(line).block(
         Block::default()
-            .title(Span::styled(" Input ", Style::default().add_modifier(Modifier::BOLD)))
+            .title(Span::styled(
+                " Input ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ))
             .borders(Borders::ALL)
             .border_style(border_style),
     );
@@ -651,8 +881,9 @@ fn render_input(app: &App, frame: &mut Frame, area: Rect) {
 }
 
 fn render_status_bar(app: &App, frame: &mut Frame, area: Rect) {
-    let model_short = if app.model.len() > 20 {
-        format!("{}…", &app.model[..20])
+    let model_short = if app.model.chars().count() > 20 {
+        let truncated: String = app.model.chars().take(20).collect();
+        format!("{}…", truncated)
     } else {
         app.model.clone()
     };
@@ -661,7 +892,7 @@ fn render_status_bar(app: &App, frame: &mut Frame, area: Rect) {
         s.clone()
     } else {
         format!(
-            " model:{model_short}  turn:{}  tokens:{}/{}  [Enter] send  [PgUp/Dn] scroll  [Ctrl+C] quit",
+            " model:{model_short}  turn:{}  tokens:{}/{}  [Enter] send  [↑↓] history  [PgUp/Dn] scroll  [Ctrl+C] cancel  [Ctrl+Q] quit",
             app.turn, app.prompt_tokens, app.completion_tokens
         )
     };
@@ -674,6 +905,7 @@ fn render_status_bar(app: &App, frame: &mut Frame, area: Rect) {
 
 async fn run_agent_task(
     message: String,
+    history: Vec<AgentMessage>,
     tx: mpsc::UnboundedSender<AgentMsg>,
     model: AppModel,
     cfg: DeepAgentConfig,
@@ -681,59 +913,69 @@ async fn run_agent_task(
     let agent = DeepAgentBuilder::new(model);
     let agent = cfg.apply_to_builder(agent).build();
 
-    let stream = match agent.chat(&message).await {
-        Ok(s) => s,
-        Err(e) => {
-            let _ = tx.send(AgentMsg::Error(e.to_string()));
-            return;
-        }
-    };
-    let mut stream = std::pin::pin!(stream);
-
-    while let Some(ev) = stream.next().await {
-        let msg = match ev {
-            DeepAgentEvent::Agent(ae) => match ae {
-                remi_core::types::AgentEvent::TurnStart { turn } => {
-                    Some(AgentMsg::TurnStart(turn))
-                }
-                remi_core::types::AgentEvent::TextDelta(t) => Some(AgentMsg::TextDelta(t)),
-                remi_core::types::AgentEvent::ToolCallStart { name, .. } => {
-                    Some(AgentMsg::ToolCallStart { name })
-                }
-                remi_core::types::AgentEvent::ToolCallArgumentsDelta { delta, .. } => {
-                    Some(AgentMsg::ToolCallArgsDelta(delta))
-                }
-                remi_core::types::AgentEvent::ToolResult { name, result, .. } => {
-                    Some(AgentMsg::ToolResult { name, result })
-                }
-                remi_core::types::AgentEvent::Usage {
-                    prompt_tokens,
-                    completion_tokens,
-                } => Some(AgentMsg::Usage {
-                    prompt: prompt_tokens,
-                    completion: completion_tokens,
-                }),
-                remi_core::types::AgentEvent::Done => Some(AgentMsg::Done),
-                remi_core::types::AgentEvent::Error(e) => Some(AgentMsg::Error(e.to_string())),
-                _ => None,
-            },
-            DeepAgentEvent::Todo(te) => match te {
-                TodoEvent::Added { id, content } => Some(AgentMsg::TodoAdded { id, content }),
-                TodoEvent::Completed { id } => Some(AgentMsg::TodoCompleted { id }),
-                TodoEvent::Updated { id, content } => Some(AgentMsg::TodoUpdated { id, content }),
-                TodoEvent::Removed { id } => Some(AgentMsg::TodoRemoved { id }),
-            },
-            DeepAgentEvent::Skill(se) => match se {
-                SkillEvent::Saved { name, .. } => Some(AgentMsg::SkillSaved(name)),
-                SkillEvent::Deleted { name } => Some(AgentMsg::SkillDeleted(name)),
-            },
+    // Scope the stream so its borrow of `agent` is released before flush.
+    {
+        let stream = match agent.chat_with_history(&message, history).await {
+            Ok(s) => s,
+            Err(e) => {
+                let _ = tx.send(AgentMsg::Error(e.to_string()));
+                return;
+            }
         };
-        if let Some(m) = msg {
-            if tx.send(m).is_err() {
-                return; // UI closed
+        let mut stream = std::pin::pin!(stream);
+
+        while let Some(ev) = stream.next().await {
+            let msg = match ev {
+                DeepAgentEvent::Agent(ae) => match ae {
+                    remi_core::types::AgentEvent::TurnStart { turn } => {
+                        Some(AgentMsg::TurnStart(turn))
+                    }
+                    remi_core::types::AgentEvent::TextDelta(t) => Some(AgentMsg::TextDelta(t)),
+                    remi_core::types::AgentEvent::ToolCallStart { name, .. } => {
+                        Some(AgentMsg::ToolCallStart { name })
+                    }
+                    remi_core::types::AgentEvent::ToolCallArgumentsDelta { delta, .. } => {
+                        Some(AgentMsg::ToolCallArgsDelta(delta))
+                    }
+                    remi_core::types::AgentEvent::ToolResult { name, result, .. } => {
+                        Some(AgentMsg::ToolResult { name, result })
+                    }
+                    remi_core::types::AgentEvent::Usage {
+                        prompt_tokens,
+                        completion_tokens,
+                    } => Some(AgentMsg::Usage {
+                        prompt: prompt_tokens,
+                        completion: completion_tokens,
+                    }),
+                    remi_core::types::AgentEvent::Done => Some(AgentMsg::Done),
+                    remi_core::types::AgentEvent::Error(e) => Some(AgentMsg::Error(e.to_string())),
+                    _ => None,
+                },
+                DeepAgentEvent::Todo(te) => match te {
+                    TodoEvent::Added { id, content } => Some(AgentMsg::TodoAdded { id, content }),
+                    TodoEvent::Completed { id } => Some(AgentMsg::TodoCompleted { id }),
+                    TodoEvent::Updated { id, content } => {
+                        Some(AgentMsg::TodoUpdated { id, content })
+                    }
+                    TodoEvent::Removed { id } => Some(AgentMsg::TodoRemoved { id }),
+                },
+                DeepAgentEvent::Skill(se) => match se {
+                    SkillEvent::Saved { name, .. } => Some(AgentMsg::SkillSaved(name)),
+                    SkillEvent::Deleted { name } => Some(AgentMsg::SkillDeleted(name)),
+                },
+                DeepAgentEvent::History(msgs) => Some(AgentMsg::History(msgs)),
+            };
+            if let Some(m) = msg {
+                if tx.send(m).is_err() {
+                    return; // UI closed — skip flush too
+                }
             }
         }
-    }
+    } // stream dropped here; borrow on `agent` ends
+
+    // Flush pending tracing I/O (LangSmith HTTP PATCHes) before the
+    // single-threaded runtime shuts down and kills background tasks.
+    agent.flush_tracer().await;
 }
 
 // ── Main ──────────────────────────────────────────────────────────────────────
@@ -745,21 +987,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if raw_args.iter().any(|a| a == "--init") {
         let force = raw_args.iter().any(|a| a == "--force");
         DeepAgentConfig::write_example(force)?;
+        // Also write SOUL.md template into the workspace dir (uses default if
+        // no config exists yet; skips without error if already present).
+        let workspace_dir = DeepAgentConfig::load()
+            .map(|cfg| cfg.agent.workspace_dir.clone())
+            .unwrap_or_else(|_| std::path::PathBuf::from(".deepagent/workspace"));
+        DeepAgentConfig::write_soul_template(&workspace_dir, force)?;
         println!("Edit deep-agent.toml then run without --init.");
         return Ok(());
     }
 
     // ── Load config ───────────────────────────────────────────────────────
-    let cfg = DeepAgentConfig::load()
-        .map_err(|e| format!("Config error: {e}"))?;
+    let cfg = DeepAgentConfig::load().map_err(|e| format!("Config error: {e}"))?;
     cfg.require_api_key()
-        .map_err(|e| { eprintln!("{e}"); std::process::exit(1); })
+        .map_err(|e| {
+            eprintln!("{e}");
+            std::process::exit(1);
+        })
         .ok();
 
     // ── Model ─────────────────────────────────────────────────────────────
     let model_name = cfg.model.model.clone();
-    let mut oai: AppModel = OpenAIClient::new(cfg.model.api_key.clone())
-        .with_model(&model_name);
+    let mut oai: AppModel = OpenAIClient::new(cfg.model.api_key.clone()).with_model(&model_name);
     if let Some(url) = &cfg.model.base_url {
         oai = oai.with_base_url(url.clone());
     }
@@ -772,14 +1021,55 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut terminal = Terminal::new(backend)?;
 
     // ── App state ──────────────────────────────────────────────────────────
-    let mut app = App::new(model_name.clone());
+    let mut app = App::new(model_name.clone(), cfg.agent.workspace_dir.clone());
+
+    // Pre-populate skill list from the store so the panel shows existing
+    // skills immediately on startup (not just after a save during this run).
+    // Also run migration from the old flat-file path so skills are visible
+    // on the very first launch after upgrading.
+    {
+        let skills_dir = cfg.agent.workspace_dir.join(".claude").join("skills");
+        let _ = std::fs::create_dir_all(&skills_dir);
+        // Migrate legacy flat skills (workspace/skills/<name>.md) if present
+        let legacy_dir = cfg.agent.workspace_dir.join("skills");
+        if legacy_dir.is_dir() {
+            if let Ok(rd) = std::fs::read_dir(&legacy_dir) {
+                for entry in rd.flatten() {
+                    let p = entry.path();
+                    if p.is_file() && p.extension().and_then(|e| e.to_str()) == Some("md") {
+                        if let Some(stem) = p.file_stem().and_then(|s| s.to_str()) {
+                            let dest_dir = skills_dir.join(stem);
+                            let dest = dest_dir.join("SKILL.md");
+                            if !dest.exists() {
+                                let _ = std::fs::create_dir_all(&dest_dir);
+                                if let Ok(content) = std::fs::read_to_string(&p) {
+                                    if std::fs::write(&dest, &content).is_ok() {
+                                        let _ = std::fs::remove_file(&p);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                let _ = std::fs::remove_dir(&legacy_dir);
+            }
+        }
+        let store = FileSkillStore::new(&skills_dir);
+        app.skills = store
+            .list_with_descriptions_sync()
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect();
+    }
 
     // ── Channels ───────────────────────────────────────────────────────────
     let (agent_tx, mut agent_rx) = mpsc::unbounded_channel::<AgentMsg>();
 
     // ── Pre-fill from CLI args ─────────────────────────────────────────────
     // (Skip --config / --init flags already consumed above)
-    let initial_task: String = raw_args.iter().skip(1)
+    let initial_task: String = raw_args
+        .iter()
+        .skip(1)
         .filter(|a| !a.starts_with("--"))
         .cloned()
         .collect::<Vec<_>>()
@@ -790,12 +1080,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let tx2 = agent_tx.clone();
         let oai2 = oai.clone();
         let cfg2 = cfg.clone();
+        let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel::<()>();
+        app.cancel_tx = Some(cancel_tx);
         std::thread::spawn(move || {
             let rt = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
                 .unwrap();
-            rt.block_on(run_agent_task(initial_task, tx2, oai2, cfg2));
+            rt.block_on(async {
+                let tx_cancel = tx2.clone();
+                tokio::select! {
+                    result = cancel_rx => {
+                        // Only treat an explicit send(()) as a cancellation;
+                        // a dropped sender (Err) means the task already
+                        // finished and the UI cleaned up—don't send spurious
+                        // "Cancelled." after every normal turn.
+                        if result.is_ok() {
+                            let _ = tx_cancel.send(AgentMsg::Error("Cancelled.".to_string()));
+                        }
+                    }
+                    _ = run_agent_task(initial_task, vec![], tx2, oai2, cfg2) => {}
+                }
+            });
         });
     }
 
@@ -813,10 +1119,35 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             maybe_event = event_stream.next().fuse() => {
                 match maybe_event {
                     Some(Ok(Event::Key(key))) => {
+                        // Clear transient status on any key (re-set below if needed)
+                        app.status_msg = None;
                         match (key.modifiers, key.code) {
-                            // Quit
-                            (KeyModifiers::CONTROL, KeyCode::Char('c'))
-                            | (KeyModifiers::CONTROL, KeyCode::Char('q')) => {
+                            // Ctrl+C: cancel running task; double-press to quit
+                            (KeyModifiers::CONTROL, KeyCode::Char('c')) => {
+                                let now = std::time::Instant::now();
+                                let double_press = app.last_ctrl_c
+                                    .map(|t| now.duration_since(t).as_millis() < 500)
+                                    .unwrap_or(false);
+                                if double_press {
+                                    break;
+                                }
+                                app.last_ctrl_c = Some(now);
+                                if app.mode == AppMode::Running {
+                                    if let Some(tx) = app.cancel_tx.take() {
+                                        let _ = tx.send(());
+                                    }
+                                    // AgentMsg::Error("Cancelled.") will arrive and reset mode
+                                    app.chat.push(ChatLine::SystemMsg(
+                                        "⚠ Cancelling… (Ctrl+C again to force quit)".into()
+                                    ));
+                                } else {
+                                    app.status_msg = Some(
+                                        "Press Ctrl+C again to quit".to_string()
+                                    );
+                                }
+                            }
+                            // Ctrl+Q always quits immediately
+                            (KeyModifiers::CONTROL, KeyCode::Char('q')) => {
                                 break;
                             }
                             // Send message on Enter (when Idle)
@@ -829,12 +1160,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     let tx2 = agent_tx.clone();
                                     let oai2 = oai.clone();
                                     let cfg2 = cfg.clone();
+                                    let history2 = app.last_history.clone();
+                                    let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel::<()>();
+                                    app.cancel_tx = Some(cancel_tx);
                                     std::thread::spawn(move || {
                                         let rt = tokio::runtime::Builder::new_current_thread()
                                             .enable_all()
                                             .build()
                                             .unwrap();
-                                        rt.block_on(run_agent_task(msg, tx2, oai2, cfg2));
+                                        rt.block_on(async {
+                                            let tx_cancel = tx2.clone();
+                                            tokio::select! {
+                                                result = cancel_rx => {
+                                                    if result.is_ok() {
+                                                        let _ = tx_cancel.send(AgentMsg::Error("Cancelled.".to_string()));
+                                                    }
+                                                }
+                                                _ = run_agent_task(msg, history2, tx2, oai2, cfg2) => {}
+                                            }
+                                        });
                                     });
                                 }
                             }
@@ -852,13 +1196,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 app.chat_scroll = app.chat_scroll.saturating_add(5);
                                 // auto_scroll re-enables when we hit bottom (clamped in render)
                             }
-                            // Arrow keys in input
+                            // Arrow keys: Left/Right move cursor; Up/Down browse history
                             (KeyModifiers::NONE, KeyCode::Left) => {
                                 app.cursor = app.cursor.saturating_sub(1);
                             }
                             (KeyModifiers::NONE, KeyCode::Right) => {
                                 let max = app.input.chars().count();
                                 if app.cursor < max { app.cursor += 1; }
+                            }
+                            (KeyModifiers::NONE, KeyCode::Up) => {
+                                app.history_up();
+                            }
+                            (KeyModifiers::NONE, KeyCode::Down) => {
+                                app.history_down();
                             }
                             (KeyModifiers::NONE, KeyCode::Home) => {
                                 app.cursor = 0;

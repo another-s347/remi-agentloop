@@ -43,11 +43,13 @@ pub use config_file::DeepAgentConfig;
 pub use events::{DeepAgentEvent, SkillEvent, TodoEvent};
 pub use compress::CompressingLayer;
 pub use registry::FileBackedRegistry;
-pub use search::TavilySearchTool;
+pub use search::{ExaSearchTool, TavilySearchTool};
 pub use skill::{
     SkillLayer,
     store::{FileSkillStore, InMemorySkillStore, SkillStore},
 };
+#[cfg(feature = "skill-virtual")]
+pub use skill::store::FsSkillStore;
 pub use task::SubAgentTaskTool;
 pub use todo::{TodoLayer, tools::TodoToolkit};
 pub use workspace_fs::{

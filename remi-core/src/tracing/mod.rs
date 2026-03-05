@@ -132,6 +132,8 @@ pub trait Tracer {
     async fn on_resume(&self, _event: &ResumeTrace) {}
     async fn on_turn_start(&self, _event: &TurnStartTrace) {}
     async fn on_custom(&self, _name: &str, _data: &serde_json::Value) {}
+    /// Flush any buffered/background I/O.  Called after the agent stream ends.
+    async fn on_flush(&self) {}
 }
 
 // ── DynTracer — object-safe version ──────────────────────────────────────────
@@ -150,6 +152,7 @@ pub trait DynTracer: Send + Sync {
     fn on_interrupt<'a>(&'a self, event: &'a InterruptTrace) -> BoxFuture<'a>;
     fn on_resume<'a>(&'a self, event: &'a ResumeTrace) -> BoxFuture<'a>;
     fn on_turn_start<'a>(&'a self, event: &'a TurnStartTrace) -> BoxFuture<'a>;
+    fn on_flush<'a>(&'a self) -> BoxFuture<'a>;
 }
 
 impl<T: Tracer + Send + Sync> DynTracer for T {
@@ -179,6 +182,9 @@ impl<T: Tracer + Send + Sync> DynTracer for T {
     }
     fn on_turn_start<'a>(&'a self, event: &'a TurnStartTrace) -> BoxFuture<'a> {
         Box::pin(Tracer::on_turn_start(self, event))
+    }
+    fn on_flush<'a>(&'a self) -> BoxFuture<'a> {
+        Box::pin(Tracer::on_flush(self))
     }
 }
 
@@ -261,6 +267,13 @@ impl DynTracer for CompositeTracer {
         Box::pin(async move {
             for t in &self.tracers {
                 t.on_turn_start(event).await;
+            }
+        })
+    }
+    fn on_flush<'a>(&'a self) -> BoxFuture<'a> {
+        Box::pin(async move {
+            for t in &self.tracers {
+                t.on_flush().await;
             }
         })
     }

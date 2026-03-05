@@ -101,8 +101,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 remi_core::types::AgentEvent::ToolResult { name, result, .. } => {
                     println!(")");
                     // Don't print huge results (FileBackedRegistry already truncated them)
-                    let preview = if result.len() > 200 {
-                        format!("{}… [{} bytes]", &result[..200], result.len())
+                    let preview = if result.chars().count() > 200 {
+                        format!("{}… [{} bytes]", result.chars().take(200).collect::<String>(), result.len())
                     } else {
                         result.clone()
                     };

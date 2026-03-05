@@ -2,15 +2,15 @@
 //! outputs to files instead of stranding them in the LLM context window.
 //!
 //! When a tool's `ToolOutput::Result` exceeds `threshold_bytes`, the content is
-//! written to `output_dir/<tool_call_id>.txt` and a short pointer message is
-//! returned instead:
+//! written to `output_dir/<tool_call_id>.txt` and a pointer message is returned.
+//! The path in the message is relative to `workspace_root` so `fs_read` can
+//! resolve it directly:
 //!
 //! ```text
-//! [Output too long (12345 bytes). Saved to .deepagent/tool-results/abc.txt.
-//!  Use fs_read to view it.]
+//! [Output too long (12345 bytes). Full content saved to .tool-results/abc.txt.
+//!  Use fs_read with path=".tool-results/abc.txt", offset=0, length=4096 to read
+//!  the first chunk, then increment offset by 4096 until remaining=0.]
 //! ```
-//!
-//! The agent can then use `fs_read` to retrieve sections of the output.
 
 use futures::StreamExt;
 use remi_core::error::AgentError;
@@ -32,6 +32,8 @@ pub struct FileBackedRegistry<R> {
     pub threshold_bytes: usize,
     /// Directory where oversized outputs are written (default `.deepagent/tool-results`).
     pub output_dir: PathBuf,
+    /// Workspace root — used to make paths in spill messages relative so `fs_read` can resolve them.
+    pub workspace_root: Option<PathBuf>,
 }
 
 impl<R: ToolRegistry> FileBackedRegistry<R> {
@@ -40,6 +42,7 @@ impl<R: ToolRegistry> FileBackedRegistry<R> {
             inner,
             threshold_bytes: 4096,
             output_dir: PathBuf::from(".deepagent/tool-results"),
+            workspace_root: None,
         }
     }
 
@@ -50,6 +53,11 @@ impl<R: ToolRegistry> FileBackedRegistry<R> {
 
     pub fn output_dir(mut self, dir: impl Into<PathBuf>) -> Self {
         self.output_dir = dir.into();
+        self
+    }
+
+    pub fn workspace_root(mut self, root: impl Into<PathBuf>) -> Self {
+        self.workspace_root = Some(root.into());
         self
     }
 }
@@ -105,11 +113,20 @@ impl<R: ToolRegistry> ToolRegistry for FileBackedRegistry<R> {
                                 let fpath = self.output_dir.join(&fname);
                                 match spill_to_file(&fpath, &result_str).await {
                                     Ok(()) => {
+                                        let total = result_str.len();
+                                        let chunk = self.threshold_bytes;
+                                        // Show a workspace-relative path so fs_read can resolve it
+                                        let rel_path = self.workspace_root
+                                            .as_deref()
+                                            .and_then(|root| fpath.strip_prefix(root).ok())
+                                            .unwrap_or(&fpath);
                                         format!(
-                                            "[Output too long ({} bytes). Saved to {}. \
-                                             Use fs_read to view it.]",
-                                            result_str.len(),
-                                            fpath.display()
+                                            "[Output too long ({total} bytes). \
+                                             Full content saved to {rel}. \
+                                             Use fs_read with path=\"{rel}\", offset=0, length={chunk} \
+                                             to read the first chunk, then increment offset by {chunk} \
+                                             until remaining=0.]",
+                                            rel = rel_path.display(),
                                         )
                                     }
                                     Err(_) => result_str, // fallback: return as-is

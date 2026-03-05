@@ -30,8 +30,9 @@ impl<S: SkillStore + 'static> Tool for SkillSaveTool<S> {
         json!({
             "type": "object",
             "properties": {
-                "name":    { "type": "string", "description": "Short identifier for the skill (no spaces, e.g. 'setup-rust-project')" },
-                "content": { "type": "string", "description": "Markdown content of the skill document" }
+                "name":        { "type": "string", "description": "Short identifier for the skill (kebab-case, e.g. 'setup-rust-project')" },
+                "description": { "type": "string", "description": "One-sentence summary shown in the skills panel and system prompt" },
+                "content":     { "type": "string", "description": "Markdown body of the skill document (do NOT include the YAML frontmatter — it is added automatically)" }
             },
             "required": ["name", "content"]
         })
@@ -47,12 +48,24 @@ impl<S: SkillStore + 'static> Tool for SkillSaveTool<S> {
             .as_str()
             .ok_or_else(|| AgentError::tool("skill__save", "missing 'name'"))?
             .to_string();
+        let description = arguments["description"].as_str().unwrap_or("").to_string();
         let content = arguments["content"]
             .as_str()
             .ok_or_else(|| AgentError::tool("skill__save", "missing 'content'"))?
             .to_string();
+
+        // Always write canonical YAML frontmatter so the file follows the
+        // Claude Code skill convention, regardless of what the model provided.
+        // If the model already included frontmatter we strip it first.
+        let body = strip_frontmatter(content.trim_start());
+        let full_content = if description.is_empty() {
+            format!("---\nname: {name}\n---\n\n{body}")
+        } else {
+            format!("---\nname: {name}\ndescription: {description}\n---\n\n{body}")
+        };
+
         let store = self.store.clone();
-        let path = store.save(&name, &content).await?;
+        let path = store.save(&name, &full_content).await?;
         Ok(ToolResult::Output(stream! {
             yield ToolOutput::Result(format!("Skill '{name}' saved to {path}"));
         }))
@@ -179,5 +192,25 @@ impl<S: SkillStore + 'static> Tool for SkillDeleteTool<S> {
         Ok(ToolResult::Output(stream! {
             yield ToolOutput::Result(result);
         }))
+    }
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+/// Remove an existing YAML frontmatter block (`---` … `---`) from the start of
+/// `content`, returning the body.  Used by `skill__save` so we can always write
+/// a fresh, canonical frontmatter without duplicating it.
+fn strip_frontmatter(content: &str) -> &str {
+    if !content.starts_with("---") {
+        return content;
+    }
+    // Skip the opening `---` line
+    let rest = content["---".len()..].trim_start_matches('\n');
+    // Find the closing `---`
+    if let Some(end) = rest.find("\n---") {
+        let after = &rest[end + "\n---".len()..];
+        after.trim_start_matches('\n')
+    } else {
+        content
     }
 }

@@ -3,7 +3,7 @@
 //! [`DeepAgentEvent`] wraps the inner [`AgentEvent`] and adds higher-level
 //! events emitted by the todo and skill layers.
 
-use remi_core::types::AgentEvent;
+use remi_core::types::{AgentEvent, Message};
 
 // ── TodoEvent ─────────────────────────────────────────────────────────────────
 
@@ -36,6 +36,10 @@ pub enum DeepAgentEvent {
     Agent(AgentEvent),
     Todo(TodoEvent),
     Skill(SkillEvent),
+    /// Full conversation history emitted just before `Agent(Done)`.
+    /// Pass this as `history` on the next `chat_with_history()` call to
+    /// maintain multi-turn context across runs.
+    History(Vec<Message>),
 }
 
 impl From<AgentEvent> for DeepAgentEvent {

@@ -19,6 +19,10 @@
 //!    the inner agent with `LoopInput::Resume`.
 //! 4. Repeat until `Done` or `Error`.
 
+use crate::workspace_fs::{
+    RootedFsCreateTool, RootedFsLsTool, RootedFsReadTool, RootedFsRemoveTool, RootedFsWriteTool,
+    WorkspaceBashTool,
+};
 use async_stream::stream;
 use futures::{Stream, StreamExt};
 use remi_core::agent::Agent;
@@ -31,18 +35,14 @@ use remi_core::model::ChatModel;
 use remi_core::state::AgentState;
 use remi_core::tool::registry::{DefaultToolRegistry, ToolRegistry};
 use remi_core::tool::{Tool, ToolContext, ToolDefinition, ToolOutput};
-use remi_core::types::{AgentEvent, LoopInput, ParsedToolCall, ToolCallOutcome};
-use crate::workspace_fs::{
-    RootedFsCreateTool, RootedFsLsTool, RootedFsReadTool, RootedFsRemoveTool,
-    RootedFsWriteTool, WorkspaceBashTool,
-};
+use remi_core::types::{AgentEvent, LoopInput, Message, ParsedToolCall, ToolCallOutcome};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::events::{DeepAgentEvent, SkillEvent, TodoEvent};
 use crate::registry::FileBackedRegistry;
-use crate::search::TavilySearchTool;
+use crate::search::ExaSearchTool;
 use crate::skill::store::{FileSkillStore, SkillStore};
 use crate::skill::tools::{SkillDeleteTool, SkillGetTool, SkillListTool, SkillSaveTool};
 use crate::task::SubAgentTaskTool;
@@ -69,6 +69,18 @@ impl<M: ChatModel + Clone + Send + Sync + 'static> DeepAgent<M> {
         self.run(input).await
     }
 
+    /// Like [`chat`] but carries forward the conversation history from a
+    /// previous run. Pass the `Vec<Message>` you received via
+    /// [`DeepAgentEvent::History`] to maintain multi-turn context.
+    pub async fn chat_with_history(
+        &self,
+        message: impl Into<String>,
+        history: Vec<Message>,
+    ) -> Result<impl Stream<Item = DeepAgentEvent> + '_, AgentError> {
+        let input = LoopInput::start(message.into()).history(history);
+        self.run(input).await
+    }
+
     /// Low-level entry point — accepts any [`LoopInput`].
     pub async fn run(
         &self,
@@ -85,6 +97,7 @@ impl<M: ChatModel + Clone + Send + Sync + 'static> DeepAgent<M> {
 
         stream! {
             let mut current = inject_extra_tools(input, extra_defs);
+            let mut last_messages: Vec<Message> = vec![];
 
             loop {
                 // ── Call inner agent ──────────────────────────────────────────
@@ -177,11 +190,21 @@ impl<M: ChatModel + Clone + Send + Sync + 'static> DeepAgent<M> {
                         }
 
                         // ── Terminal events ────────────────────────────────────
-                        AgentEvent::Done
-                        | AgentEvent::Cancelled
+                        AgentEvent::Done => {
+                            yield DeepAgentEvent::History(last_messages.clone());
+                            yield DeepAgentEvent::Agent(AgentEvent::Done);
+                            return;
+                        }
+                        AgentEvent::Cancelled
                         | AgentEvent::Error(_) => {
                             yield DeepAgentEvent::Agent(ev);
                             return;
+                        }
+
+                        // ── Capture full message list from checkpoints ─────────
+                        AgentEvent::Checkpoint(ref cp) => {
+                            last_messages = cp.state.messages.clone();
+                            // don't propagate checkpoint events to consumers
                         }
 
                         // ── Pass-through ───────────────────────────────────────
@@ -197,6 +220,14 @@ impl<M: ChatModel + Clone + Send + Sync + 'static> DeepAgent<M> {
                 }
             }
         }
+    }
+
+    /// Flush any buffered tracing I/O (e.g. pending LangSmith HTTP calls).
+    ///
+    /// Call this once after the stream returned by `chat()` / `chat_with_history()`
+    /// has been fully consumed — before the async runtime shuts down.
+    pub async fn flush_tracer(&self) {
+        self.inner.flush_tracer().await;
     }
 }
 
@@ -223,10 +254,15 @@ pub struct DeepAgentBuilder<M: ChatModel + Clone + Send + Sync + 'static> {
     max_turns: usize,
     /// Workspace root: bash cwd, fs tool root, and parent of skills dir.
     workspace_dir: PathBuf,
-    skills_dir: Option<PathBuf>, // None = <workspace_dir>/skills
+    skills_dir: Option<PathBuf>, // None = <workspace_dir>/.claude/skills
     result_spill_threshold: usize,
     task_sub_agent_turns: usize,
-    tavily_api_key: Option<String>,
+    search_api_key: Option<String>,
+    langsmith_api_key: Option<String>,
+    langsmith_project: Option<String>,
+    /// Model name string for tracing (e.g. "kimi-k2.5"). Does not change which
+    /// model is called — that is determined by the `M: ChatModel` instance.
+    model_name: Option<String>,
     extra_tools: Vec<Box<dyn FnOnce(&mut DefaultToolRegistry)>>,
 }
 
@@ -247,7 +283,10 @@ impl<M: ChatModel + Clone + Send + Sync + 'static> DeepAgentBuilder<M> {
             skills_dir: None,
             result_spill_threshold: 4096,
             task_sub_agent_turns: 10,
-            tavily_api_key: None,
+            search_api_key: None,
+            langsmith_api_key: None,
+            langsmith_project: None,
+            model_name: None,
             extra_tools: vec![],
         }
     }
@@ -270,23 +309,52 @@ impl<M: ChatModel + Clone + Send + Sync + 'static> DeepAgentBuilder<M> {
         self
     }
 
-    /// Override the skills directory (default: `<workspace_dir>/skills`).
+    /// Override the skills directory (default: `<workspace_dir>/.claude/skills`).
+    /// Skills follow the Claude Code convention: one sub-directory per skill
+    /// containing a `SKILL.md` file (with optional YAML frontmatter).
     pub fn skills_dir(mut self, path: impl Into<PathBuf>) -> Self {
         self.skills_dir = Some(path.into());
         self
     }
 
-    /// Enable Tavily web search with the given API key.
-    pub fn tavily_api_key(mut self, key: impl Into<String>) -> Self {
-        self.tavily_api_key = Some(key.into());
+    /// Enable Exa web search with the given API key.
+    pub fn exa_api_key(mut self, key: impl Into<String>) -> Self {
+        self.search_api_key = Some(key.into());
         self
     }
 
-    /// Enable Tavily web search if `TAVILY_API_KEY` env var is set.
-    pub fn tavily_from_env(mut self) -> Self {
-        if let Ok(k) = std::env::var("TAVILY_API_KEY") {
-            self.tavily_api_key = Some(k);
+    /// Enable Exa web search if `EXA_API_KEY` env var is set.
+    pub fn exa_from_env(mut self) -> Self {
+        if let Ok(k) = std::env::var("EXA_API_KEY") {
+            self.search_api_key = Some(k);
         }
+        self
+    }
+
+    /// Enable LangSmith tracing with the given API key.
+    pub fn langsmith_api_key(mut self, key: impl Into<String>) -> Self {
+        self.langsmith_api_key = Some(key.into());
+        self
+    }
+
+    /// Set the LangSmith project name (default: `"deep-agent"`).
+    pub fn langsmith_project(mut self, project: impl Into<String>) -> Self {
+        self.langsmith_project = Some(project.into());
+        self
+    }
+
+    /// Enable LangSmith tracing if the `LANGSMITH_API_KEY` env var is set.
+    pub fn langsmith_from_env(mut self) -> Self {
+        if let Ok(k) = std::env::var("LANGSMITH_API_KEY") {
+            self.langsmith_api_key = Some(k);
+        }
+        self
+    }
+
+    /// Set the model name used for tracing/observability.
+    /// (Does not change which model is called — use the `model` constructor argument for that.)
+    pub fn model_name(mut self, name: impl Into<String>) -> Self {
+        self.model_name = Some(name.into());
         self
     }
 
@@ -303,9 +371,10 @@ impl<M: ChatModel + Clone + Send + Sync + 'static> DeepAgentBuilder<M> {
 
     /// Register an additional tool into the inner `AgentLoop`.
     pub fn tool(mut self, tool: impl Tool + Send + Sync + 'static) -> Self {
-        self.extra_tools.push(Box::new(move |r: &mut DefaultToolRegistry| {
-            r.register(tool);
-        }));
+        self.extra_tools
+            .push(Box::new(move |r: &mut DefaultToolRegistry| {
+                r.register(tool);
+            }));
         self
     }
 
@@ -314,36 +383,139 @@ impl<M: ChatModel + Clone + Send + Sync + 'static> DeepAgentBuilder<M> {
         let workspace_dir = self.workspace_dir.clone();
         let _ = std::fs::create_dir_all(&workspace_dir);
 
-        let skills_dir = self.skills_dir.clone()
-            .unwrap_or_else(|| workspace_dir.join("skills"));
+        // Skills follow the Claude Code convention:
+        // <workspace>/.claude/skills/<name>/SKILL.md
+        let skills_dir = self
+            .skills_dir
+            .clone()
+            .unwrap_or_else(|| workspace_dir.join(".claude").join("skills"));
         let _ = std::fs::create_dir_all(&skills_dir);
+
+        // ── Auto-migrate legacy flat skills (workspace/skills/<name>.md) ───────
+        // If the old flat-file skills dir exists, convert each file to the new
+        // subdirectory format (<name>/SKILL.md) and remove the originals.
+        let legacy_skills_dir = workspace_dir.join("skills");
+        if legacy_skills_dir.is_dir() && legacy_skills_dir != skills_dir {
+            if let Ok(rd) = std::fs::read_dir(&legacy_skills_dir) {
+                for entry in rd.flatten() {
+                    let p = entry.path();
+                    if p.is_file() && p.extension().and_then(|e| e.to_str()) == Some("md") {
+                        if let Some(stem) = p.file_stem().and_then(|s| s.to_str()) {
+                            let dest_dir = skills_dir.join(stem);
+                            let dest = dest_dir.join("SKILL.md");
+                            if !dest.exists() {
+                                let _ = std::fs::create_dir_all(&dest_dir);
+                                if let Ok(content) = std::fs::read_to_string(&p) {
+                                    if std::fs::write(&dest, content).is_ok() {
+                                        let _ = std::fs::remove_file(&p);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                // Remove the now-empty legacy directory (ignore errors)
+                let _ = std::fs::remove_dir(&legacy_skills_dir);
+            }
+        }
 
         // Spill dir inside workspace
         let spill_dir = workspace_dir.join(".tool-results");
 
+        // ── Load SOUL.md (identity / values) and prepend to system prompt ─────
+        let soul_path = workspace_dir.join("SOUL.md");
+        // Auto-create a default SOUL.md on first run so the user has a template
+        // to customise rather than starting from nothing.
+        if !soul_path.exists() {
+            let default_soul = "\
+# Identity & Values\n\
+\n\
+<!-- Edit this file to give the agent a persistent personality, style, and\n\
+     values that apply to every conversation. This content is prepended to\n\
+     the system prompt automatically. -->\n\
+\n\
+You are a helpful, thoughtful AI assistant. Be concise, honest, and precise.\n\
+When unsure, say so. Prefer working solutions over long explanations.\n";
+            let _ = std::fs::write(&soul_path, default_soul);
+        }
+        let soul_content = std::fs::read_to_string(&soul_path).unwrap_or_default();
+        let mut system = if soul_content.trim().is_empty() {
+            self.system.clone()
+        } else {
+            format!(
+                "{soul}\n\n{base}",
+                soul = soul_content.trim_end(),
+                base = self.system
+            )
+        };
+
+        // ── Inject available skills summary into system prompt ─────────────────
+        // Load skill names + descriptions now so the model knows which skills
+        // exist without needing to call skill__list first.
+        let skill_store_preview = FileSkillStore::new(&skills_dir);
+        let skill_list = skill_store_preview.list_with_descriptions_sync();
+        if !skill_list.is_empty() {
+            system.push_str(
+                "\n\n## Saved Skills\n\
+                 The following skills are saved in `.claude/skills/`. \
+                 Use `skill__get <name>` to load the full content.\n",
+            );
+            for (name, desc) in &skill_list {
+                match desc {
+                    Some(d) => system.push_str(&format!("- **{name}**: {d}\n")),
+                    None => system.push_str(&format!("- **{name}**\n")),
+                }
+            }
+        }
+
         // ── Inner agent (bash + fs, FileBackedRegistry) ───────────────────────
         let mut inner_registry = DefaultToolRegistry::new();
         inner_registry.register(WorkspaceBashTool::new(workspace_dir.clone()));
-        inner_registry.register(RootedFsReadTool   { root: workspace_dir.clone() });
-        inner_registry.register(RootedFsWriteTool  { root: workspace_dir.clone() });
-        inner_registry.register(RootedFsCreateTool { root: workspace_dir.clone() });
-        inner_registry.register(RootedFsRemoveTool { root: workspace_dir.clone() });
-        inner_registry.register(RootedFsLsTool     { root: workspace_dir.clone() });
-        if let Some(key) = self.tavily_api_key.clone() {
-            inner_registry.register(TavilySearchTool::new(key));
+        inner_registry.register(RootedFsReadTool {
+            root: workspace_dir.clone(),
+        });
+        inner_registry.register(RootedFsWriteTool {
+            root: workspace_dir.clone(),
+        });
+        inner_registry.register(RootedFsCreateTool {
+            root: workspace_dir.clone(),
+        });
+        inner_registry.register(RootedFsRemoveTool {
+            root: workspace_dir.clone(),
+        });
+        inner_registry.register(RootedFsLsTool {
+            root: workspace_dir.clone(),
+        });
+        if let Some(key) = self.search_api_key.clone() {
+            inner_registry.register(ExaSearchTool::new(key));
         }
         for apply in self.extra_tools {
             apply(&mut inner_registry);
         }
         let file_backed = FileBackedRegistry::new(inner_registry)
             .threshold(self.result_spill_threshold)
-            .output_dir(spill_dir);
-        let inner = AgentBuilder::new()
+            .output_dir(spill_dir)
+            .workspace_root(workspace_dir.clone());
+        let mut core_b = AgentBuilder::new()
             .model(self.model.clone())
-            .system(&self.system)
-            .max_turns(self.max_turns)
-            .with_registry(file_backed)
-            .build();
+            .system(&system)
+            .max_turns(self.max_turns);
+
+        if let Some(name) = self.model_name.clone() {
+            core_b = core_b.config(AgentConfig::default().with_model(name));
+        }
+
+        #[cfg(feature = "tracing-langsmith")]
+        if let Some(key) = self.langsmith_api_key.clone() {
+            let project = self
+                .langsmith_project
+                .clone()
+                .unwrap_or_else(|| "deep-agent".to_string());
+            let tracer = remi_core::tracing::LangSmithTracer::new(key).with_project(project);
+            core_b = core_b.tracer(tracer);
+        }
+
+        let inner = core_b.with_registry(file_backed).build();
 
         // ── Local "virtual" tools (todo + skill + task) ───────────────────────
         let skill_store = Arc::new(FileSkillStore::new(skills_dir));
@@ -357,10 +529,18 @@ impl<M: ChatModel + Clone + Send + Sync + 'static> DeepAgentBuilder<M> {
         local_tools.register(TodoRemoveTool);
 
         // Skill
-        local_tools.register(SkillSaveTool { store: Arc::clone(&skill_store) });
-        local_tools.register(SkillGetTool  { store: Arc::clone(&skill_store) });
-        local_tools.register(SkillListTool { store: Arc::clone(&skill_store) });
-        local_tools.register(SkillDeleteTool { store: Arc::clone(&skill_store) });
+        local_tools.register(SkillSaveTool {
+            store: Arc::clone(&skill_store),
+        });
+        local_tools.register(SkillGetTool {
+            store: Arc::clone(&skill_store),
+        });
+        local_tools.register(SkillListTool {
+            store: Arc::clone(&skill_store),
+        });
+        local_tools.register(SkillDeleteTool {
+            store: Arc::clone(&skill_store),
+        });
 
         // Task (sub-agent delegation)
         local_tools.register(SubAgentTaskTool::new(
@@ -414,18 +594,11 @@ fn build_tool_ctx(state: &AgentState) -> ToolContext {
 }
 
 /// Derive `DeepAgentEvent` side-events for a completed tool call.
-fn make_deep_events(
-    tc: &ParsedToolCall,
-    result: &str,
-    ctx: &ToolContext,
-) -> Vec<DeepAgentEvent> {
+fn make_deep_events(tc: &ParsedToolCall, result: &str, ctx: &ToolContext) -> Vec<DeepAgentEvent> {
     let mut evs = vec![];
     match tc.name.as_str() {
         "todo__add" => {
-            let content = tc.arguments["content"]
-                .as_str()
-                .unwrap_or("")
-                .to_string();
+            let content = tc.arguments["content"].as_str().unwrap_or("").to_string();
             // Extract the ID from user_state (it was just written by the tool)
             let us = ctx.user_state.read().unwrap();
             let todos: Vec<crate::todo::tools::TodoItem> =

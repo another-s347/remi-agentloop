@@ -179,8 +179,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     for (i, msg) in current_state.messages.iter().enumerate() {
         let role = format!("{:?}", msg.role);
         let preview = msg.content.text_content();
-        let preview = if preview.len() > 80 {
-            format!("{}…", &preview[..80])
+        let preview = if preview.chars().count() > 80 {
+            format!("{}…", preview.chars().take(80).collect::<String>())
         } else {
             preview
         };

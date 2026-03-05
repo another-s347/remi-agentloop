@@ -37,6 +37,21 @@ fn write_todos(ctx: &ToolContext, todos: Vec<TodoItem>) {
     us["__todos"] = serde_json::to_value(&todos).unwrap_or(json!([]));
 }
 
+/// Atomically modify the todo list under a single write lock to prevent
+/// interleaving when multiple todo tools run in parallel.
+///
+/// `f` receives the current list and returns `(updated_list, return_value)`.
+fn modify_todos<T>(ctx: &ToolContext, f: impl FnOnce(Vec<TodoItem>) -> (Vec<TodoItem>, T)) -> T {
+    let mut us = ctx.user_state.write().unwrap();
+    let todos: Vec<TodoItem> = match us.get("__todos") {
+        Some(v) => serde_json::from_value(v.clone()).unwrap_or_default(),
+        None => vec![],
+    };
+    let (updated, ret) = f(todos);
+    us["__todos"] = serde_json::to_value(&updated).unwrap_or(json!([]));
+    ret
+}
+
 /// Next ID = max existing + 1 (or 1 if empty).
 fn next_id(todos: &[TodoItem]) -> u64 {
     todos.iter().map(|t| t.id).max().unwrap_or(0) + 1
@@ -89,14 +104,12 @@ impl Tool for TodoAddTool {
             .ok_or_else(|| AgentError::tool("todo__add", "missing 'content'"))?
             .to_string();
 
-        let mut todos = read_todos(ctx);
-        let id = next_id(&todos);
-        todos.push(TodoItem {
-            id,
-            content: content.clone(),
-            done: false,
+        let (id, content2) = modify_todos(ctx, |mut todos| {
+            let id = next_id(&todos);
+            todos.push(TodoItem { id, content: content.clone(), done: false });
+            (todos, (id, content))
         });
-        write_todos(ctx, todos);
+        let (id, content) = (id, content2);
 
         Ok(ToolResult::Output(stream! {
             yield ToolOutput::Result(format!("Added todo #{id}: {content}"));
@@ -166,15 +179,13 @@ impl Tool for TodoCompleteTool {
             .as_u64()
             .ok_or_else(|| AgentError::tool("todo__complete", "missing 'id'"))?;
 
-        let mut todos = read_todos(ctx);
-        let msg = match todos.iter_mut().find(|t| t.id == id) {
-            Some(t) => {
-                t.done = true;
-                write_todos(ctx, todos);
-                format!("Todo #{id} marked as done.")
-            }
-            None => format!("Todo #{id} not found."),
-        };
+        let msg = modify_todos(ctx, |mut todos| {
+            let msg = match todos.iter_mut().find(|t| t.id == id) {
+                Some(t) => { t.done = true; format!("Todo #{id} marked as done.") }
+                None => format!("Todo #{id} not found."),
+            };
+            (todos, msg)
+        });
         Ok(ToolResult::Output(
             stream! { yield ToolOutput::Result(msg); },
         ))
@@ -218,15 +229,13 @@ impl Tool for TodoUpdateTool {
             .ok_or_else(|| AgentError::tool("todo__update", "missing 'content'"))?
             .to_string();
 
-        let mut todos = read_todos(ctx);
-        let msg = match todos.iter_mut().find(|t| t.id == id) {
-            Some(t) => {
-                t.content = content.clone();
-                write_todos(ctx, todos);
-                format!("Updated todo #{id}: {content}")
-            }
-            None => format!("Todo #{id} not found."),
-        };
+        let msg = modify_todos(ctx, |mut todos| {
+            let msg = match todos.iter_mut().find(|t| t.id == id) {
+                Some(t) => { t.content = content.clone(); format!("Updated todo #{id}: {content}") }
+                None => format!("Todo #{id} not found."),
+            };
+            (todos, msg)
+        });
         Ok(ToolResult::Output(
             stream! { yield ToolOutput::Result(msg); },
         ))
@@ -265,11 +274,12 @@ impl Tool for TodoRemoveTool {
             .as_u64()
             .ok_or_else(|| AgentError::tool("todo__remove", "missing 'id'"))?;
 
-        let mut todos = read_todos(ctx);
-        let before = todos.len();
-        todos.retain(|t| t.id != id);
-        let removed = before != todos.len();
-        write_todos(ctx, todos);
+        let removed = modify_todos(ctx, |mut todos| {
+            let before = todos.len();
+            todos.retain(|t| t.id != id);
+            let removed = before != todos.len();
+            (todos, removed)
+        });
 
         Ok(ToolResult::Output(stream! {
             if removed {

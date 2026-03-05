@@ -21,7 +21,7 @@
 //! result_spill_threshold = 4096
 //!
 //! [search]
-//! tavily_api_key = "tvly-..."   # optional – omit to disable web_search
+//! exa_api_key = "your-key"   # optional – omit to disable web_search
 //! ```
 
 use serde::{Deserialize, Serialize};
@@ -73,7 +73,8 @@ pub struct AgentSection {
     #[serde(default = "defaults::max_turns")]
     pub max_turns: usize,
 
-    /// Workspace root directory — bash cwd + fs tool root + parent of skills.
+    /// Workspace root directory — bash cwd + fs tool root.
+    /// Skills are stored at `<workspace_dir>/.claude/skills/<name>/SKILL.md`.
     #[serde(default = "defaults::workspace_dir")]
     pub workspace_dir: PathBuf,
 
@@ -85,6 +86,12 @@ pub struct AgentSection {
     /// instead of flooding the model context (default 4096).
     #[serde(default = "defaults::spill_threshold")]
     pub result_spill_threshold: usize,
+
+    /// Whether to save large tool results to disk at all (default true).
+    /// Set to `false` to pass all tool output directly to the model, no matter
+    /// how large, and never write `.tool-results/` files.
+    #[serde(default = "defaults::save_tool_results")]
+    pub save_tool_results: bool,
 }
 
 impl Default for AgentSection {
@@ -95,6 +102,7 @@ impl Default for AgentSection {
             workspace_dir: defaults::workspace_dir(),
             task_sub_agent_turns: defaults::task_turns(),
             result_spill_threshold: defaults::spill_threshold(),
+            save_tool_results: defaults::save_tool_results(),
         }
     }
 }
@@ -102,8 +110,20 @@ impl Default for AgentSection {
 /// `[search]` section — web search settings.
 #[derive(Debug, Deserialize, Serialize, Clone, Default)]
 pub struct SearchConfig {
-    /// Tavily API key.  If absent, the `web_search` tool is not registered.
-    pub tavily_api_key: Option<String>,
+    /// Exa API key.  If absent, the `web_search` tool is not registered.
+    /// Also accepts `EXA_API_KEY` env var (applied in `apply_to_builder`).
+    pub exa_api_key: Option<String>,
+}
+
+/// `[tracing]` section — observability / LangSmith settings.
+#[derive(Debug, Deserialize, Serialize, Clone, Default)]
+pub struct TracingConfig {
+    /// LangSmith API key.  Falls back to the `LANGSMITH_API_KEY` env var.
+    /// If absent (and env var unset), LangSmith tracing is disabled.
+    pub langsmith_api_key: Option<String>,
+
+    /// LangSmith project (session) name.  Defaults to `"deep-agent"`.
+    pub langsmith_project: Option<String>,
 }
 
 // ── Root config ───────────────────────────────────────────────────────────────
@@ -117,6 +137,8 @@ pub struct DeepAgentConfig {
     pub agent: AgentSection,
     #[serde(default)]
     pub search: SearchConfig,
+    #[serde(default)]
+    pub tracing: TracingConfig,
 }
 
 impl DeepAgentConfig {
@@ -135,6 +157,12 @@ impl DeepAgentConfig {
                 .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
             let mut cfg: DeepAgentConfig = toml::from_str(&content)
                 .map_err(|e| format!("invalid TOML in {}: {e}", path.display()))?;
+            // LangSmith key: file value takes priority; fall back to env var
+            if cfg.tracing.langsmith_api_key.is_none() {
+                if let Ok(k) = std::env::var("LANGSMITH_API_KEY") {
+                    cfg.tracing.langsmith_api_key = Some(k);
+                }
+            }
             // If api_key was left blank in the file, fall back to env
             if cfg.model.api_key.is_empty() {
                 cfg.model.api_key = std::env::var("OPENAI_API_KEY")
@@ -196,17 +224,32 @@ impl DeepAgentConfig {
     where
         M: ChatModel + Clone + Send + Sync + 'static,
     {
+        let effective_threshold = if self.agent.save_tool_results {
+            self.agent.result_spill_threshold
+        } else {
+            usize::MAX
+        };
         builder = builder
             .max_turns(self.agent.max_turns)
             .task_sub_agent_turns(self.agent.task_sub_agent_turns)
-            .result_spill_threshold(self.agent.result_spill_threshold)
-            .workspace_dir(self.agent.workspace_dir.clone());
+            .result_spill_threshold(effective_threshold)
+            .workspace_dir(self.agent.workspace_dir.clone())
+            .model_name(self.model.model.clone());
 
         if let Some(system) = &self.agent.system {
             builder = builder.system(system);
         }
-        if let Some(key) = &self.search.tavily_api_key {
-            builder = builder.tavily_api_key(key.clone());
+        // Explicit config key takes priority; fall back to env var.
+        let exa_key = self.search.exa_api_key.clone()
+            .or_else(|| std::env::var("EXA_API_KEY").ok());
+        if let Some(key) = exa_key {
+            builder = builder.exa_api_key(key);
+        }
+        if let Some(key) = &self.tracing.langsmith_api_key {
+            builder = builder.langsmith_api_key(key.clone());
+        }
+        if let Some(project) = &self.tracing.langsmith_project {
+            builder = builder.langsmith_project(project.clone());
         }
         builder
     }
@@ -240,7 +283,8 @@ model = "gpt-4o"
 max_turns = 20
 
 # Workspace root — bash runs here, all fs paths are relative to this.
-# Skills and tool-result spills are stored inside this directory.
+# Skills: <workspace_dir>/.claude/skills/<name>/SKILL.md
+# Tool-result spills: <workspace_dir>/.tool-results/
 workspace_dir = ".deepagent/workspace"
 
 # Maximum turns for sub-agent task delegation.
@@ -250,10 +294,22 @@ task_sub_agent_turns = 10
 # is returned to the model instead of the full content.
 result_spill_threshold = 4096
 
+# Set to false to disable saving tool results to disk entirely.
+# All tool output will be passed directly to the model regardless of size.
+# save_tool_results = true
+
 [search]
-# Tavily web search API key. Omit or leave empty to disable web_search.
-# Get one at https://tavily.com
-# tavily_api_key = "tvly-..."
+# Exa web search API key. Omit or leave empty to disable web_search.
+# Get one at https://dashboard.exa.ai/api-keys
+# exa_api_key = "your-exa-key"
+# (can also be set via EXA_API_KEY env var)
+
+[tracing]
+# LangSmith observability — leave commented to disable.
+# Can also be set via LANGSMITH_API_KEY environment variable.
+# Get your key at https://smith.langchain.com
+# langsmith_api_key = "ls__..."
+# langsmith_project = "deep-agent"
 "#
     }
 
@@ -270,6 +326,57 @@ result_spill_threshold = 4096
         println!("Created {}", path.display());
         Ok(())
     }
+
+    /// Write a template `SOUL.md` to `<workspace_dir>/SOUL.md`.
+    ///
+    /// Called automatically by `--init`.  Silently skips creation when the file
+    /// already exists and `overwrite` is false, so the user's edits are safe.
+    pub fn write_soul_template(
+        workspace_dir: &PathBuf,
+        overwrite: bool,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let _ = std::fs::create_dir_all(workspace_dir);
+        let path = workspace_dir.join("SOUL.md");
+        if path.exists() && !overwrite {
+            return Ok(()); // silently preserve user-edited file
+        }
+        std::fs::write(&path, Self::soul_template())?;
+        println!("Created {}", path.display());
+        Ok(())
+    }
+
+    /// Default SOUL.md template written by `--init`.
+    ///
+    /// Place this file at `<workspace_dir>/SOUL.md` to shape the agent's
+    /// personality, values and working style.  It is loaded automatically and
+    /// prepended to the system prompt at the start of every session.
+    pub fn soul_template() -> &'static str {
+        r#"# SOUL.md — Agent Identity & Values
+# This file is automatically prepended to the system prompt at the start of
+# every session.  Edit it freely — it will never be overwritten once created.
+#
+# Lines starting with `#` are comments and are still visible to the model,
+# so they can be used to add meta-instructions.
+
+## Identity
+You are a focused, thoughtful, and highly capable AI assistant.
+You are honest about uncertainty and proactively ask for clarification when
+a task is ambiguous rather than proceeding on wrong assumptions.
+
+## Values
+- **Accuracy first**: verify before asserting.
+- **Minimal footprint**: make only the changes that are necessary.
+- **Transparency**: briefly explain what you are about to do before doing it.
+- **Respect autonomy**: present options rather than making irreversible decisions
+  unilaterally.
+
+## Working Style
+- Break complex tasks into small, verifiable steps.
+- When writing code, prefer clarity over cleverness.
+- Always read existing files before modifying them.
+- Summarise completed work concisely at the end of each response.
+"#
+    }
 }
 
 // ── Defaults ──────────────────────────────────────────────────────────────────
@@ -281,4 +388,5 @@ mod defaults {
     pub fn workspace_dir() -> PathBuf { PathBuf::from(".deepagent/workspace") }
     pub fn task_turns() -> usize { 10 }
     pub fn spill_threshold() -> usize { 4096 }
+    pub fn save_tool_results() -> bool { true }
 }

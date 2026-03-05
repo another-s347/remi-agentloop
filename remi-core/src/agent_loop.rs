@@ -117,12 +117,32 @@ impl<M: ChatModel> AgentLoop<M> {
 
             if emit_run_start {
                 if let Some(t) = tracer {
+                    // Build the full input message list for the trace —
+                    // include the upcoming user message so the trace shows
+                    // what the model will actually receive.
+                    let mut trace_input = state.messages.clone();
+                    match &action {
+                        Action::UserMessage(text) => {
+                            trace_input.push(Message::user(text));
+                        }
+                        Action::UserContent(content) => {
+                            trace_input.push(Message {
+                                id: crate::types::MessageId::new(),
+                                role: crate::types::Role::User,
+                                content: content.clone(),
+                                tool_calls: None,
+                                tool_call_id: None,
+                                reasoning_content: None,
+                            });
+                        }
+                        _ => {}
+                    }
                     t.on_run_start(&RunStartTrace {
                         thread_id: Some(state.thread_id.clone()),
                         run_id: run_id.clone(),
                         model: model_name.clone(),
                         system_prompt: state.system_prompt.clone(),
-                        input_messages: state.messages.clone(),
+                        input_messages: trace_input,
                         metadata: state.config.metadata.clone(),
                         timestamp: chrono::Utc::now(),
                     }).await;
@@ -623,6 +643,16 @@ impl<M: ChatModel> AgentLoop<M> {
                 0,
             ));
             yield AgentEvent::Cancelled;
+        }
+    }
+
+    /// Flush any buffered tracing I/O (e.g. pending LangSmith HTTP calls).
+    ///
+    /// Call this after the agent event stream has been fully consumed and
+    /// before the async runtime shuts down.
+    pub async fn flush_tracer(&self) {
+        if let Some(t) = self.tracer.as_deref() {
+            t.on_flush().await;
         }
     }
 }

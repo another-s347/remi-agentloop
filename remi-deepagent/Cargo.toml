@@ -8,6 +8,8 @@ description = "Deep agent with todo, skill, context-compression, file-backed reg
 [features]
 default = ["native"]
 native = ["remi-core/native", "tokio/full", "dep:reqwest"]
+skill-virtual = ["dep:bashkit"]
+tracing-langsmith = ["remi-core/tracing-langsmith"]
 tui = [
     "native",
     "dep:ratatui",
@@ -15,6 +17,7 @@ tui = [
     "dep:remi-transport",
     "remi-model/http-client",
     "remi-transport/http-client",
+    "tracing-langsmith",
 ]
 
 [dependencies]
@@ -32,6 +35,7 @@ serde_json = { workspace = true }
 uuid = { workspace = true }
 toml = { workspace = true }
 
+bashkit = { version = "0.1", optional = true }
 ratatui = { workspace = true, optional = true }
 crossterm = { workspace = true, optional = true }
 reqwest = { workspace = true, features = ["rustls-tls"], optional = true }

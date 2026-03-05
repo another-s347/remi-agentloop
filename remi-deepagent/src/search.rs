@@ -1,9 +1,9 @@
-//! Tavily web search tool.
+//! Exa web search tool.
 //!
-//! Calls the Tavily Search API (`https://api.tavily.com/search`) and returns
-//! formatted results with title, URL, and a content snippet.
+//! Calls the Exa Search API (`https://api.exa.ai/search`) and returns
+//! formatted results with title, URL, and content highlights.
 //!
-//! Set `TAVILY_API_KEY` env var or pass the key directly via [`TavilySearchTool::new`].
+//! Set `EXA_API_KEY` env var or pass the key directly via [`ExaSearchTool::new`].
 
 use async_stream::stream;
 use futures::Stream;
@@ -12,55 +12,55 @@ use remi_core::error::AgentError;
 use remi_core::tool::{Tool, ToolContext, ToolOutput, ToolResult};
 use remi_core::types::ResumePayload;
 
-const TAVILY_API_URL: &str = "https://api.tavily.com/search";
+const EXA_API_URL: &str = "https://api.exa.ai/search";
 
-/// Web search via the Tavily Search API.
+/// Web search via the Exa Search API.
 ///
 /// # Usage
 /// ```no_run
-/// use remi_deepagent::TavilySearchTool;
+/// use remi_deepagent::ExaSearchTool;
 ///
-/// let tool = TavilySearchTool::new("tvly-...");
+/// let tool = ExaSearchTool::new("your-exa-api-key");
 /// // or from env var:
-/// let tool = TavilySearchTool::from_env().expect("TAVILY_API_KEY not set");
+/// let tool = ExaSearchTool::from_env().expect("EXA_API_KEY not set");
 /// ```
-pub struct TavilySearchTool {
+pub struct ExaSearchTool {
     api_key: String,
-    max_results: usize,
-    search_depth: String, // "basic" | "advanced"
+    num_results: usize,
+    search_type: String, // "auto" | "neural" | "fast" | "deep"
 }
 
-impl TavilySearchTool {
+impl ExaSearchTool {
     pub fn new(api_key: impl Into<String>) -> Self {
         Self {
             api_key: api_key.into(),
-            max_results: 5,
-            search_depth: "basic".to_string(),
+            num_results: 5,
+            search_type: "auto".to_string(),
         }
     }
 
-    /// Read API key from `TAVILY_API_KEY` env var.
+    /// Read API key from `EXA_API_KEY` env var.
     pub fn from_env() -> Option<Self> {
-        std::env::var("TAVILY_API_KEY").ok().map(Self::new)
+        std::env::var("EXA_API_KEY").ok().map(Self::new)
     }
 
-    pub fn max_results(mut self, n: usize) -> Self {
-        self.max_results = n;
+    pub fn num_results(mut self, n: usize) -> Self {
+        self.num_results = n;
         self
     }
 
-    /// Use `"advanced"` for deeper search (uses more API credits).
-    pub fn search_depth(mut self, depth: impl Into<String>) -> Self {
-        self.search_depth = depth.into();
+    /// Set the Exa search type: `"auto"` (default), `"neural"`, `"fast"`, `"deep"`.
+    pub fn search_type(mut self, t: impl Into<String>) -> Self {
+        self.search_type = t.into();
         self
     }
 }
 
-impl Tool for TavilySearchTool {
+impl Tool for ExaSearchTool {
     fn name(&self) -> &str { "web_search" }
     fn description(&self) -> &str {
-        "Search the web using Tavily. \
-         Returns a list of relevant results with titles, URLs, and content snippets. \
+        "Search the web using Exa. \
+         Returns relevant results with titles, URLs, and content highlights. \
          Use for current events, documentation look-ups, or any topic requiring fresh web data."
     }
     fn parameters_schema(&self) -> serde_json::Value {
@@ -71,7 +71,7 @@ impl Tool for TavilySearchTool {
                     "type": "string",
                     "description": "Search query string"
                 },
-                "max_results": {
+                "num_results": {
                     "type": "integer",
                     "description": "Maximum number of results to return (default 5)",
                     "default": 5
@@ -89,8 +89,8 @@ impl Tool for TavilySearchTool {
     ) -> impl std::future::Future<Output = Result<ToolResult<impl Stream<Item = ToolOutput>>, AgentError>>
     {
         let api_key = self.api_key.clone();
-        let default_max = self.max_results;
-        let search_depth = self.search_depth.clone();
+        let default_num = self.num_results;
+        let search_type = self.search_type.clone();
 
         async move {
             let query = arguments["query"]
@@ -98,24 +98,26 @@ impl Tool for TavilySearchTool {
                 .ok_or_else(|| AgentError::tool("web_search", "missing 'query'"))?
                 .to_string();
 
-            let max_results = arguments["max_results"]
+            let num_results = arguments["num_results"]
                 .as_u64()
                 .map(|n| n as usize)
-                .unwrap_or(default_max);
+                .unwrap_or(default_num);
 
             Ok(ToolResult::Output(stream! {
                 let client = reqwest::Client::new();
                 let body = serde_json::json!({
-                    "api_key": api_key,
                     "query": query,
-                    "search_depth": search_depth,
-                    "max_results": max_results,
-                    "include_answer": true,
-                    "include_raw_content": false,
+                    "type": search_type,
+                    "numResults": num_results,
+                    "contents": {
+                        "text": { "maxCharacters": 2000 },
+                        "highlights": { "maxCharacters": 1000 }
+                    }
                 });
 
                 let resp = match client
-                    .post(TAVILY_API_URL)
+                    .post(EXA_API_URL)
+                    .header("x-api-key", &api_key)
                     .header("content-type", "application/json")
                     .json(&body)
                     .send()
@@ -123,7 +125,7 @@ impl Tool for TavilySearchTool {
                 {
                     Ok(r) => r,
                     Err(e) => {
-                        yield ToolOutput::Result(format!("error contacting Tavily: {}", e));
+                        yield ToolOutput::Result(format!("error contacting Exa: {e}"));
                         return;
                     }
                 };
@@ -132,43 +134,51 @@ impl Tool for TavilySearchTool {
                 let text = match resp.text().await {
                     Ok(t) => t,
                     Err(e) => {
-                        yield ToolOutput::Result(format!("error reading Tavily response: {}", e));
+                        yield ToolOutput::Result(format!("error reading Exa response: {e}"));
                         return;
                     }
                 };
 
                 if !status.is_success() {
-                    yield ToolOutput::Result(format!("Tavily API error {}: {}", status, text));
+                    yield ToolOutput::Result(format!("Exa API error {}: {}", status, text));
                     return;
                 }
 
                 let json: serde_json::Value = match serde_json::from_str(&text) {
                     Ok(v) => v,
                     Err(e) => {
-                        yield ToolOutput::Result(format!("failed to parse Tavily response: {}", e));
+                        yield ToolOutput::Result(format!("failed to parse Exa response: {e}"));
                         return;
                     }
                 };
 
                 let mut output = String::new();
 
-                // Include the AI-generated answer if present
-                if let Some(answer) = json["answer"].as_str() {
-                    if !answer.is_empty() {
-                        output.push_str("**Summary:** ");
-                        output.push_str(answer);
-                        output.push_str("\n\n");
-                    }
-                }
-
-                // Format results
                 if let Some(results) = json["results"].as_array() {
                     for (i, result) in results.iter().enumerate() {
-                        let title   = result["title"].as_str().unwrap_or("(no title)");
-                        let url     = result["url"].as_str().unwrap_or("");
-                        let content = result["content"].as_str().unwrap_or("");
-                        output.push_str(&format!("{}. **{}**\n   {}\n   {}\n\n",
-                            i + 1, title, url, content));
+                        let title = result["title"].as_str().unwrap_or("(no title)");
+                        let url   = result["url"].as_str().unwrap_or("");
+                        let date  = result["publishedDate"].as_str().unwrap_or("");
+
+                        output.push_str(&format!("{}. **{}**\n   {}\n", i + 1, title, url));
+                        if !date.is_empty() {
+                            let date_short: String = date.chars().take(10).collect();
+                            output.push_str(&format!("   Published: {}\n", date_short));
+                        }
+
+                        // Prefer highlights (more concise), fall back to text
+                        let snippet = result["highlights"]
+                            .as_array()
+                            .and_then(|h| h.first())
+                            .and_then(|h| h.as_str())
+                            .or_else(|| result["text"].as_str())
+                            .unwrap_or("");
+
+                        if !snippet.is_empty() {
+                            let trimmed: String = snippet.chars().take(400).collect();
+                            output.push_str(&format!("   {}\n", trimmed));
+                        }
+                        output.push('\n');
                     }
                 }
 
@@ -181,3 +191,6 @@ impl Tool for TavilySearchTool {
         }
     }
 }
+
+/// Type alias for backward compatibility.
+pub type TavilySearchTool = ExaSearchTool;

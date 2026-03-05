@@ -356,6 +356,12 @@ impl<M: ChatModel, S: ContextStore, C: CheckpointStore> BuiltAgent<M, S, C> {
             }
         }
     }
+
+    /// Flush any buffered tracing I/O (e.g. pending LangSmith HTTP calls).
+    /// Call this after the agent event stream has been fully consumed.
+    pub async fn flush_tracer(&self) {
+        self.inner.flush_tracer().await;
+    }
 }
 
 // ── Agent impl (stateless) ────────────────────────────────────────────────────

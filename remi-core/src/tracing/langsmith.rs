@@ -97,19 +97,40 @@ pub struct LangSmithTracer {
     api_key: String,
     api_url: String,
     project_name: String,
-    tx: mpsc::UnboundedSender<LangSmithMessage>,
+    /// Channel sender — wrapped in Option so `flush()` can close it.
+    tx: std::sync::Mutex<Option<mpsc::UnboundedSender<LangSmithMessage>>>,
+    /// Handle to the background sender task.
+    handle: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 
 impl LangSmithTracer {
     /// Create a new tracer.  Spawns a background Tokio task immediately.
     pub fn new(api_key: impl Into<String>) -> Self {
         let (tx, rx) = mpsc::unbounded_channel();
-        tokio::spawn(Self::background_sender(rx));
+        let handle = tokio::spawn(Self::background_sender(rx));
         Self {
             api_key: api_key.into(),
             api_url: DEFAULT_API_URL.to_string(),
             project_name: "default".to_string(),
-            tx,
+            tx: std::sync::Mutex::new(Some(tx)),
+            handle: std::sync::Mutex::new(Some(handle)),
+        }
+    }
+
+    /// Close the send channel and await the background sender, ensuring all
+    /// pending HTTP calls (POST/PATCH) reach LangSmith before returning.
+    ///
+    /// Call this after the agent stream is exhausted, **before** the Tokio
+    /// runtime is dropped.
+    pub async fn flush(&self) {
+        // Closing the Sender tells background_sender to drain then exit.
+        if let Ok(mut guard) = self.tx.lock() {
+            let _ = guard.take();
+        }
+        // Wait for the background task to finish.
+        let handle = self.handle.lock().ok().and_then(|mut g| g.take());
+        if let Some(h) = handle {
+            let _ = h.await;
         }
     }
 
@@ -158,20 +179,28 @@ impl LangSmithTracer {
     // ── Private helpers ───────────────────────────────────────────────────────
 
     fn post(&self, run: LangSmithRun) {
-        let _ = self.tx.send(LangSmithMessage::Post {
-            run,
-            api_url: self.api_url.clone(),
-            api_key: self.api_key.clone(),
-        });
+        if let Ok(guard) = self.tx.lock() {
+            if let Some(tx) = guard.as_ref() {
+                let _ = tx.send(LangSmithMessage::Post {
+                    run,
+                    api_url: self.api_url.clone(),
+                    api_key: self.api_key.clone(),
+                });
+            }
+        }
     }
 
     fn patch(&self, id: impl Into<String>, patch: serde_json::Value) {
-        let _ = self.tx.send(LangSmithMessage::Patch {
-            id: id.into(),
-            patch,
-            api_url: self.api_url.clone(),
-            api_key: self.api_key.clone(),
-        });
+        if let Ok(guard) = self.tx.lock() {
+            if let Some(tx) = guard.as_ref() {
+                let _ = tx.send(LangSmithMessage::Patch {
+                    id: id.into(),
+                    patch,
+                    api_url: self.api_url.clone(),
+                    api_key: self.api_key.clone(),
+                });
+            }
+        }
     }
 
     /// Derive a deterministic UUID for an LLM child run.
@@ -182,6 +211,13 @@ impl LangSmithTracer {
     fn llm_run_id(run_id: &crate::types::RunId, turn: usize) -> String {
         let ns = Uuid::parse_str(&run_id.0).unwrap_or_else(|_| Uuid::nil());
         Uuid::new_v5(&ns, format!("llm:{turn}").as_bytes()).to_string()
+    }
+
+    /// Uses UUID v5 (namespace = parent run UUID, name = `"tool:<tool_call_id>"`) to
+    /// convert the OpenAI `call_abc123` format into a valid UUID that LangSmith accepts.
+    fn tool_run_id(run_id: &crate::types::RunId, tool_call_id: &str) -> String {
+        let ns = Uuid::parse_str(&run_id.0).unwrap_or_else(|_| Uuid::nil());
+        Uuid::new_v5(&ns, format!("tool:{tool_call_id}").as_bytes()).to_string()
     }
 
     /// Background task: drains the mpsc channel and performs HTTP calls.
@@ -334,11 +370,13 @@ impl Tracer for LangSmithTracer {
         async {}
     }
 
-    /// POST a new Tool child run.  Uses `tool_call_id` as the run UUID since
-    /// it is already unique within a run and stable across pause/resume.
+    /// POST a new Tool child run.  The UUID is derived via UUID v5 from
+    /// `run_id + tool_call_id` so that the raw OpenAI `call_abc123` format
+    /// is converted to a valid UUID that LangSmith accepts.
     fn on_tool_start(&self, event: &ToolStartTrace) -> impl Future<Output = ()> {
+        let tool_id = Self::tool_run_id(&event.run_id, &event.tool_call_id);
         self.post(LangSmithRun {
-            id: event.tool_call_id.clone(),
+            id: tool_id,
             parent_run_id: Some(event.run_id.0.clone()),
             run_type: "tool".to_string(),
             name: event.tool_name.clone(),
@@ -360,13 +398,14 @@ impl Tracer for LangSmithTracer {
 
     /// PATCH the Tool child run with its result, status, and any error.
     fn on_tool_end(&self, event: &ToolEndTrace) -> impl Future<Output = ()> {
+        let tool_id = Self::tool_run_id(&event.run_id, &event.tool_call_id);
         let status = if event.error.is_some() {
             "error"
         } else {
             "success"
         };
         self.patch(
-            event.tool_call_id.clone(),
+            tool_id,
             serde_json::json!({
                 "outputs": {
                     "result": event.result,
@@ -421,5 +460,11 @@ impl Tracer for LangSmithTracer {
     /// of LLM child runs.
     fn on_turn_start(&self, _event: &TurnStartTrace) -> impl Future<Output = ()> {
         async {}
+    }
+
+    /// Flush: close the mpsc channel then await the background sender task so
+    /// all pending HTTP POSTs / PATCHes are sent before the runtime shuts down.
+    fn on_flush(&self) -> impl Future<Output = ()> {
+        LangSmithTracer::flush(self)
     }
 }

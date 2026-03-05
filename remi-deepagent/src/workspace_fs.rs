@@ -108,13 +108,20 @@ pub struct RootedFsReadTool { pub root: PathBuf }
 impl Tool for RootedFsReadTool {
     fn name(&self) -> &str { "fs_read" }
     fn description(&self) -> &str {
-        "Read a file in the workspace. Path is relative to the workspace root."
+        "Read a file in the workspace. Supports chunked reading via `offset` and \
+        `length` to avoid returning too much data at once. \n\
+        - `offset`: byte offset to start reading from (default 0). \n\
+        - `length`: maximum number of bytes to return (default 8192). \n\
+        Always check the `[total_bytes]` footer in the result and call again \
+        with `offset += length` until you have read all the content you need."
     }
     fn parameters_schema(&self) -> serde_json::Value {
         serde_json::json!({
             "type": "object",
             "properties": {
-                "path": { "type": "string", "description": "File path (relative to workspace root)" }
+                "path":   { "type": "string",  "description": "File path (relative to workspace root)" },
+                "offset": { "type": "integer", "description": "Byte offset to start reading from (default 0)" },
+                "length": { "type": "integer", "description": "Maximum bytes to read (default 8192)" }
             },
             "required": ["path"]
         })
@@ -132,11 +139,31 @@ impl Tool for RootedFsReadTool {
                 .as_str()
                 .ok_or_else(|| AgentError::tool("fs_read", "missing 'path'"))?
                 .to_string();
+            let offset = arguments["offset"].as_u64().unwrap_or(0) as usize;
+            let length = arguments["length"].as_u64().unwrap_or(8192) as usize;
             let full = resolve(&root, &path_str);
             Ok(ToolResult::Output(stream! {
-                match tokio::fs::read_to_string(&full).await {
-                    Ok(content) => yield ToolOutput::Result(content),
-                    Err(e)      => yield ToolOutput::Result(format!("error: {}", e)),
+                match tokio::fs::read(&full).await {
+                    Err(e) => yield ToolOutput::Result(format!("error: {}", e)),
+                    Ok(bytes) => {
+                        let total = bytes.len();
+                        let start = offset.min(total);
+                        let end   = (start + length).min(total);
+                        let chunk = &bytes[start..end];
+                        let text  = String::from_utf8_lossy(chunk).into_owned();
+                        let remaining = total.saturating_sub(end);
+                        let mut result = text;
+                        result.push_str(&format!(
+                            "\n[offset={start} length={} total_bytes={total} remaining={remaining}]",
+                            end - start
+                        ));
+                        if remaining > 0 {
+                            result.push_str(&format!(
+                                "\n[{remaining} bytes remaining — call fs_read again with offset={end}]"
+                            ));
+                        }
+                        yield ToolOutput::Result(result);
+                    }
                 }
             }))
         }
@@ -363,6 +390,103 @@ impl Tool for RootedFsLsTool {
                         });
                         yield ToolOutput::Result(serde_json::Value::Array(entries).to_string());
                     }
+                }
+            }))
+        }
+    }
+}
+
+// ── MemoryReadTool ────────────────────────────────────────────────────────────
+
+/// Reads the persistent `memory.md` file from the workspace.
+pub struct MemoryReadTool {
+    pub path: PathBuf,  // full path to memory.md
+}
+
+impl Tool for MemoryReadTool {
+    fn name(&self) -> &str { "memory_read" }
+    fn description(&self) -> &str {
+        "Read your persistent memory notes. Returns the full content of memory.md \
+         which is preserved across sessions. Call this to recall information from \
+         previous sessions."
+    }
+    fn parameters_schema(&self) -> serde_json::Value {
+        serde_json::json!({ "type": "object", "properties": {}, "required": [] })
+    }
+    fn execute(
+        &self,
+        _arguments: serde_json::Value,
+        _resume: Option<ResumePayload>,
+        _ctx: &ToolContext,
+    ) -> impl std::future::Future<Output = Result<ToolResult<impl Stream<Item = ToolOutput>>, AgentError>>
+    {
+        let path = self.path.clone();
+        async move {
+            Ok(ToolResult::Output(stream! {
+                match tokio::fs::read_to_string(&path).await {
+                    Ok(content) if content.trim().is_empty() =>
+                        yield ToolOutput::Result("(memory is empty)".to_string()),
+                    Ok(content) => yield ToolOutput::Result(content),
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound =>
+                        yield ToolOutput::Result("(memory is empty)".to_string()),
+                    Err(e) => yield ToolOutput::Result(format!("error: {e}")),
+                }
+            }))
+        }
+    }
+}
+
+// ── MemoryUpdateTool ──────────────────────────────────────────────────────────
+
+/// Overwrites `memory.md` with new content, persisting it for future sessions.
+pub struct MemoryUpdateTool {
+    pub path: PathBuf,  // full path to memory.md
+}
+
+impl Tool for MemoryUpdateTool {
+    fn name(&self) -> &str { "memory_update" }
+    fn description(&self) -> &str {
+        "Overwrite your persistent memory notes. Pass the FULL desired content of \
+         memory.md — this replaces everything currently stored. \
+         Call this at the end of each task to record: \
+         user preferences, key facts learned, project context, \
+         decisions made, or anything useful to remember next session."
+    }
+    fn parameters_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "content": {
+                    "type": "string",
+                    "description": "Full markdown content to store as persistent memory"
+                }
+            },
+            "required": ["content"]
+        })
+    }
+    fn execute(
+        &self,
+        arguments: serde_json::Value,
+        _resume: Option<ResumePayload>,
+        _ctx: &ToolContext,
+    ) -> impl std::future::Future<Output = Result<ToolResult<impl Stream<Item = ToolOutput>>, AgentError>>
+    {
+        let path = self.path.clone();
+        async move {
+            let content = arguments["content"]
+                .as_str()
+                .ok_or_else(|| AgentError::tool("memory_update", "missing 'content'"))?
+                .to_string();
+            let len = content.len();
+            Ok(ToolResult::Output(stream! {
+                if let Some(parent) = path.parent() {
+                    let _ = tokio::fs::create_dir_all(parent).await;
+                }
+                match tokio::fs::write(&path, content.as_bytes()).await {
+                    Ok(()) => yield ToolOutput::Result(
+                        format!("memory.md updated ({len} bytes)")
+                    ),
+                    Err(e) => yield ToolOutput::Result(format!("error: {e}")),
                 }
             }))
         }
