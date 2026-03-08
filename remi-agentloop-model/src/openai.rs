@@ -200,7 +200,11 @@ impl<T: HttpTransport> Agent for OpenAIClient<T> {
                     if line.is_empty() || line.starts_with(':') {
                         continue;
                     }
-                    if let Some(data) = line.strip_prefix("data: ") {
+                    if let Some(data) = line
+                        .strip_prefix("data: ")
+                        .or_else(|| line.strip_prefix("data:"))
+                    {
+                        let data = data.trim_start();
                         if data == "[DONE]" {
                             // keep reading — some APIs send usage chunk after [DONE]
                             continue;

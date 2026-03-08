@@ -10,6 +10,7 @@
 //! remi build --agent ./my-agent --targets wasip2    # wasip2 only
 //! remi build --agent ./my-agent --targets web       # browser only
 //! remi build --agent ./my-agent --output ./dist     # custom output dir
+//! remi build --agent ./my-agent --precompile-targets aarch64-linux-android
 //!
 //! remi dev --agent ./my-agent --port 8080           # hot-reload dev server
 //! ```
@@ -68,6 +69,15 @@ struct BuildArgs {
     /// Path to the remi-agentloop workspace root (auto-detected if omitted).
     #[arg(long)]
     remi_root: Option<PathBuf>,
+
+    /// AOT-precompile the wasip2 output for these host triples (comma-separated).
+    ///
+    /// Requires building with `--features precompile` and that `wasip2` is in
+    /// `--targets`. Each triple produces `<output>/<agent>.{triple}.cwasm`.
+    ///
+    /// Example: --precompile-targets aarch64-linux-android
+    #[arg(long, value_delimiter = ',')]
+    precompile_targets: Vec<String>,
 }
 
 #[derive(Clone, Debug, ValueEnum, PartialEq)]
@@ -146,6 +156,75 @@ fn run_build(args: BuildArgs) {
         eprintln!("\n❌ Some targets failed.");
         std::process::exit(1);
     }
+
+    // Optional AOT precompile step (requires --features precompile).
+    #[cfg(feature = "precompile")]
+    if !args.precompile_targets.is_empty() {
+        if !run_precompile_step(&args.precompile_targets, &agent_name, &output) {
+            std::process::exit(1);
+        }
+    }
+
+    #[cfg(not(feature = "precompile"))]
+    if !args.precompile_targets.is_empty() {
+        eprintln!(
+            "Warning: --precompile-targets specified but remi-cli was built without the \
+             `precompile` feature. Rebuild with `--features precompile`."
+        );
+    }
+}
+
+// ── AOT precompile ───────────────────────────────────────────────────────────
+
+/// Cross-compile `<agent>.wasm` into one `.cwasm` blob per target triple.
+///
+/// Only compiled when the `precompile` feature is enabled.
+#[cfg(feature = "precompile")]
+fn run_precompile_step(triples: &[String], agent_name: &str, output: &Path) -> bool {
+    let wasm_path = output.join(format!("{agent_name}.wasm"));
+    if !wasm_path.exists() {
+        eprintln!(
+            "\n❌ Precompile: {wasm_path:?} not found. \
+             Make sure `--targets wasip2` is included."
+        );
+        return false;
+    }
+    let wasm_bytes = std::fs::read(&wasm_path).unwrap_or_else(|e| {
+        eprintln!("❌ Cannot read {wasm_path:?}: {e}");
+        std::process::exit(1);
+    });
+
+    println!("\n── AOT precompile ──────────────────────────────────────");
+    let mut ok = true;
+    for triple in triples {
+        // Normalise triple for use in a filename: replace non-alphanumeric chars with '_'
+        let normalized: String = triple
+            .chars()
+            .map(|c| if c.is_alphanumeric() || c == '_' { c } else { '-' })
+            .collect();
+        let out_path = output.join(format!("{agent_name}.{normalized}.cwasm"));
+        print!("  {triple} → {} … ", out_path.display());
+        match remi_agentloop_wasm::WasmAgent::precompile_for_target(&wasm_bytes, triple) {
+            Ok(cwasm) => {
+                std::fs::write(&out_path, &cwasm).unwrap_or_else(|e| {
+                    eprintln!("❌ Cannot write {out_path:?}: {e}");
+                    std::process::exit(1);
+                });
+                println!("✅ ({:.0} KB)", cwasm.len() as f64 / 1024.0);
+            }
+            Err(e) => {
+                println!("❌");
+                eprintln!("    Error: {}: {}", e.code, e.message);
+                ok = false;
+            }
+        }
+    }
+    if ok {
+        println!("\n✅ Precompile complete.");
+    } else {
+        eprintln!("\n❌ Precompile failed for one or more targets.");
+    }
+    ok
 }
 
 // ── Build: wasip2 ────────────────────────────────────────────────────────────

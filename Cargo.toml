@@ -75,7 +75,6 @@ base64 = "0.22"
 wit-bindgen = "0.53"
 wasmtime = { version = "42", default-features = false, features = [
     "component-model",
-    "cranelift",
     "async",
 ] }
 wasmtime-wasi = "42"

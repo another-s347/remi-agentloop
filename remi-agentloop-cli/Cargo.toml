@@ -26,6 +26,10 @@ dev = [
     "dep:serde_json",
 ]
 
+# Enable `--precompile-targets` in `remi build`.
+# Uses Cranelift cross-compilation to produce AOT `.cwasm` blobs for Android etc.
+precompile = ["dep:remi-agentloop-wasm", "remi-agentloop-wasm/compiler"]
+
 [dependencies]
 clap = { version = "4", features = ["derive"] }
 toml_edit = "0.22"

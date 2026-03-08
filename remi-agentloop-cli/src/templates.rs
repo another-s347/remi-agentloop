@@ -5,6 +5,13 @@
 
 // ── wasip2 templates ─────────────────────────────────────────────────────────
 
+fn toml_path(path: &str) -> String {
+    path
+        .strip_prefix(r"\\?\")
+        .unwrap_or(path)
+        .replace('\\', "/")
+}
+
 pub fn wasip2_cargo_toml(
     agent_name: &str,
     agent_path: &str,
@@ -13,6 +20,9 @@ pub fn wasip2_cargo_toml(
 ) -> String {
     // Using the agent_name with -wasip2 suffix as the crate name
     let crate_name = format!("{agent_name}_wasip2_entry");
+    let agent_path = toml_path(agent_path);
+    let remi_agentloop_path = toml_path(remi_agentloop_path);
+    let remi_macros_path = toml_path(remi_macros_path);
     format!(
         r#"[package]
 name = "{crate_name}"
@@ -23,7 +33,7 @@ edition = "2021"
 crate-type = ["cdylib"]
 
 [dependencies]
-{agent_name} = {{ path = "{agent_path}" }}
+{agent_name} = {{ path = "{agent_path}", default-features = false }}
 remi-agentloop = {{ path = "{remi_agentloop_path}", default-features = false }}
 remi-agentloop-macros = {{ path = "{remi_macros_path}" }}
 wit-bindgen = "0.53"
@@ -187,6 +197,7 @@ fn extract_config(input: &LoopInput) -> (String, String, String) {{
     let meta = match input {{
         LoopInput::Start {{ metadata, .. }} => metadata.as_ref(),
         LoopInput::Resume {{ state, .. }} => state.config.metadata.as_ref(),
+        LoopInput::Cancel {{ state }} => state.config.metadata.as_ref(),
     }};
 
     let empty = serde_json::Value::Null;
@@ -211,6 +222,8 @@ pub fn web_cargo_toml(
     _remi_macros_path: &str,
 ) -> String {
     let crate_name = format!("{agent_name}-web-entry");
+    let agent_path = toml_path(agent_path);
+    let remi_agentloop_path = toml_path(remi_agentloop_path);
     format!(
         r#"[package]
 name = "{crate_name}"
@@ -221,7 +234,7 @@ edition = "2021"
 crate-type = ["cdylib"]
 
 [dependencies]
-{agent_name} = {{ path = "{agent_path}" }}
+{agent_name} = {{ path = "{agent_path}", default-features = false }}
 remi-agentloop = {{ path = "{remi_agentloop_path}", default-features = false }}
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
@@ -416,6 +429,7 @@ fn extract_config(input: &LoopInput) -> (String, String, String) {{
     let meta = match input {{
         LoopInput::Start {{ metadata, .. }} => metadata.as_ref(),
         LoopInput::Resume {{ state, .. }} => state.config.metadata.as_ref(),
+        LoopInput::Cancel {{ state }} => state.config.metadata.as_ref(),
     }};
 
     let empty = serde_json::Value::Null;

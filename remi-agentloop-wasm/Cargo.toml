@@ -6,7 +6,10 @@ license.workspace = true
 description = "WASM component runner for remi-agentloop — loads .wasm agents and exposes them as Agent"
 
 [features]
-default = ["http-host"]
+# compiler: enables JIT (cranelift). Available on desktop/server; disable for Android.
+# precompiled: enables from_precompiled_bytes / precompile_for_target (needs compiler when cross-compiling).
+default = ["http-host", "compiler"]
+compiler = ["wasmtime/cranelift"]
 http-host = ["reqwest"]
 dev-server = [
     "http-host",

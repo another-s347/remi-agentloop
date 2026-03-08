@@ -634,6 +634,9 @@ impl WasmAgent {
     }
 
     /// Load a WASM component from a file path.
+    ///
+    /// Requires the `compiler` feature (Cranelift JIT). Not available on Android.
+    #[cfg(feature = "compiler")]
     pub fn from_file(path: impl AsRef<Path>) -> Result<Self, ProtocolError> {
         let engine = Self::make_engine()?;
         let component = Component::from_file(&engine, path).map_err(|e| ProtocolError {
@@ -648,17 +651,82 @@ impl WasmAgent {
     }
 
     /// Load a WASM component from in-memory bytes.
+    ///
+    /// Auto-detects the artifact format from the magic bytes:
+    /// - Raw WASM (`\0asm` header) → JIT-compiled via Cranelift. Requires the
+    ///   `compiler` feature; not available on Android.
+    /// - Everything else → treated as a precompiled `.cwasm` artifact and loaded
+    ///   via `Component::deserialize`. No compiler needed; works on Android.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, ProtocolError> {
+        if !bytes.starts_with(b"\0asm") {
+            return Self::from_precompiled_bytes(bytes);
+        }
+        #[cfg(not(feature = "compiler"))]
+        return Err(ProtocolError {
+            code: "no_compiler".into(),
+            message: "Raw WASM bytes require the `compiler` feature (Cranelift JIT). \
+                      Provide a precompiled .cwasm artifact for this platform."
+                .into(),
+        });
+        #[cfg(feature = "compiler")]
+        {
+            let engine = Self::make_engine()?;
+            let component = Component::new(&engine, bytes).map_err(|e| ProtocolError {
+                code: "component_error".into(),
+                message: e.to_string(),
+            })?;
+            Self::new_with_source(
+                engine,
+                component,
+                Arc::new(StaticConfigSource(AgentConfig::default())),
+            )
+        }
+    }
+
+    /// Load from a pre-AOT-compiled `.cwasm` blob. No Cranelift needed at runtime.
+    ///
+    /// # Safety
+    /// The bytes must be a trusted artifact produced by
+    /// [`WasmAgent::precompile_for_target`] or `Engine::precompile_component`.
+    pub fn from_precompiled_bytes(bytes: &[u8]) -> Result<Self, ProtocolError> {
         let engine = Self::make_engine()?;
-        let component = Component::new(&engine, bytes).map_err(|e| ProtocolError {
-            code: "component_error".into(),
-            message: e.to_string(),
-        })?;
+        // SAFETY: caller guarantees bytes are a valid, trusted wasmtime artifact.
+        let component =
+            unsafe { Component::deserialize(&engine, bytes) }.map_err(|e| ProtocolError {
+                code: "component_error".into(),
+                message: format!("Failed to deserialize precompiled WASM: {e}"),
+            })?;
         Self::new_with_source(
             engine,
             component,
             Arc::new(StaticConfigSource(AgentConfig::default())),
         )
+    }
+
+    /// Cross-compile `.wasm` bytes to a precompiled `.cwasm` blob for `target_triple`.
+    ///
+    /// Requires the `compiler` feature (Cranelift cross-compilation).
+    #[cfg(feature = "compiler")]
+    pub fn precompile_for_target(
+        wasm_bytes: &[u8],
+        target_triple: &str,
+    ) -> Result<Vec<u8>, ProtocolError> {
+        let mut cfg = WasmtimeConfig::new();
+        cfg.wasm_component_model(true);
+        cfg.target(target_triple).map_err(|e| ProtocolError {
+            code: "target_error".into(),
+            message: format!("Unknown target triple '{target_triple}': {e}"),
+        })?;
+        let engine = Engine::new(&cfg).map_err(|e| ProtocolError {
+            code: "engine_error".into(),
+            message: e.to_string(),
+        })?;
+        engine
+            .precompile_component(wasm_bytes)
+            .map_err(|e| ProtocolError {
+                code: "precompile_error".into(),
+                message: format!("Precompile failed for '{target_triple}': {e}"),
+            })
     }
 
     /// Override the config source with a static `AgentConfig`.

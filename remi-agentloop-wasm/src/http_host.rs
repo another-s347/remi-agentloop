@@ -93,10 +93,7 @@ impl WasiView for HttpHostState {
 // -- HTTP transport Host trait impls ------------------------------------------
 
 impl remi::agentloop::http_transport::HostResponseBody for HttpHostState {
-    fn next_chunk(
-        &mut self,
-        self_: Resource<ResponseBodyData>,
-    ) -> Result<Option<Vec<u8>>, String> {
+    fn next_chunk(&mut self, self_: Resource<ResponseBodyData>) -> Result<Option<Vec<u8>>, String> {
         let data = self.table.get_mut(&self_).map_err(|e| e.to_string())?;
         tokio::task::block_in_place(|| {
             tokio::runtime::Handle::current().block_on(async {
@@ -168,42 +165,112 @@ pub struct WasmAgentWithHttp {
 }
 
 impl WasmAgentWithHttp {
-    /// Load a WASM component from a file path.
+    fn make_engine(config: &Config) -> Result<Engine, ProtocolError> {
+        Engine::new(config).map_err(|e| ProtocolError {
+            code: "engine_error".into(),
+            message: e.to_string(),
+        })
+    }
+
+    /// Load a WASM component from a file path (JIT-compiles at load time).
+    ///
+    /// Requires the `compiler` feature (Cranelift). Not available on Android.
+    #[cfg(feature = "compiler")]
     pub fn from_file(path: impl AsRef<Path>) -> Result<Self, ProtocolError> {
         let mut config = Config::new();
         config.wasm_component_model(true);
-
-        let engine = Engine::new(&config).map_err(|e| ProtocolError {
-            code: "engine_error".into(),
+        let engine = Self::make_engine(&config)?;
+        let component = Component::from_file(&engine, path).map_err(|e| ProtocolError {
+            code: "component_error".into(),
             message: e.to_string(),
         })?;
-
-        let component =
-            Component::from_file(&engine, path).map_err(|e| ProtocolError {
-                code: "component_error".into(),
-                message: e.to_string(),
-            })?;
-
         Ok(Self { engine, component })
     }
 
-    /// Load from in-memory bytes.
+    /// Load a WASM component from in-memory bytes.
+    ///
+    /// Auto-detects the artifact format from the magic bytes:
+    /// - Raw WASM (`\0asm` header) → JIT-compiled via Cranelift. Requires the
+    ///   `compiler` feature; not available on Android.
+    /// - Everything else → treated as a precompiled `.cwasm` artifact and loaded
+    ///   via `Component::deserialize`. No compiler needed; works on Android.
+    ///
+    /// This means you can embed the right artifact for each platform and call
+    /// this uniformly — the runtime picks the correct loading path on demand.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, ProtocolError> {
-        let mut config = Config::new();
-        config.wasm_component_model(true);
-
-        let engine = Engine::new(&config).map_err(|e| ProtocolError {
-            code: "engine_error".into(),
-            message: e.to_string(),
-        })?;
-
-        let component =
-            Component::new(&engine, bytes).map_err(|e| ProtocolError {
+        if !bytes.starts_with(b"\0asm") {
+            // Precompiled artifact — no JIT needed.
+            return Self::from_precompiled_bytes(bytes);
+        }
+        // Raw WASM — needs Cranelift JIT.
+        #[cfg(not(feature = "compiler"))]
+        return Err(ProtocolError {
+            code: "no_compiler".into(),
+            message: "Raw WASM bytes require the `compiler` feature (Cranelift JIT). \
+                      Provide a precompiled .cwasm artifact for this platform."
+                .into(),
+        });
+        #[cfg(feature = "compiler")]
+        {
+            let mut config = Config::new();
+            config.wasm_component_model(true);
+            let engine = Self::make_engine(&config)?;
+            let component = Component::new(&engine, bytes).map_err(|e| ProtocolError {
                 code: "component_error".into(),
                 message: e.to_string(),
             })?;
+            Ok(Self { engine, component })
+        }
+    }
 
+    /// Load from a pre-AOT-compiled `.cwasm` blob produced by
+    /// [`WasmAgentWithHttp::precompile_for_target`].
+    ///
+    /// # Safety
+    /// The bytes must have been produced by a trusted invocation of
+    /// `precompile_for_target` (or `Engine::precompile_component`). Loading
+    /// an untrusted or mismatched blob is undefined behaviour.
+    ///
+    /// Available without the `compiler` feature — suitable for Android where
+    /// JIT compilation is not permitted.
+    pub fn from_precompiled_bytes(bytes: &[u8]) -> Result<Self, ProtocolError> {
+        let mut config = Config::new();
+        config.wasm_component_model(true);
+        let engine = Self::make_engine(&config)?;
+        // SAFETY: caller guarantees bytes are a valid, trusted wasmtime artifact.
+        let component =
+            unsafe { Component::deserialize(&engine, bytes) }.map_err(|e| ProtocolError {
+                code: "component_error".into(),
+                message: format!("Failed to deserialize precompiled WASM: {e}"),
+            })?;
         Ok(Self { engine, component })
+    }
+
+    /// Cross-compile a `.wasm` component bytes into a precompiled `.cwasm`
+    /// blob for `target_triple` (e.g. `"aarch64-linux-android"`).
+    ///
+    /// The resulting bytes can be saved to disk and later loaded on the target
+    /// device via [`from_precompiled_bytes`].
+    ///
+    /// Requires the `compiler` feature (Cranelift cross-compilation).
+    #[cfg(feature = "compiler")]
+    pub fn precompile_for_target(
+        wasm_bytes: &[u8],
+        target_triple: &str,
+    ) -> Result<Vec<u8>, ProtocolError> {
+        let mut config = Config::new();
+        config.wasm_component_model(true);
+        config.target(target_triple).map_err(|e| ProtocolError {
+            code: "target_error".into(),
+            message: format!("Unknown target triple '{target_triple}': {e}"),
+        })?;
+        let engine = Self::make_engine(&config)?;
+        engine
+            .precompile_component(wasm_bytes)
+            .map_err(|e| ProtocolError {
+                code: "precompile_error".into(),
+                message: format!("Precompile failed for target '{target_triple}': {e}"),
+            })
     }
 
     /// Set up the guest component and call `chat()`, returning the
@@ -231,11 +298,9 @@ impl WasmAgentWithHttp {
         let mut linker: Linker<HttpHostState> = Linker::new(&self.engine);
 
         // Link WASI p2
-        wasmtime_wasi::p2::add_to_linker_sync(&mut linker).map_err(|e| {
-            ProtocolError {
-                code: "linker_error".into(),
-                message: format!("Failed to link WASI: {e}"),
-            }
+        wasmtime_wasi::p2::add_to_linker_sync(&mut linker).map_err(|e| ProtocolError {
+            code: "linker_error".into(),
+            message: format!("Failed to link WASI: {e}"),
         })?;
 
         // Link streaming http-transport interface
@@ -250,11 +315,12 @@ impl WasmAgentWithHttp {
 
         // Instantiate the component
         let bindings =
-            AgentWorld::instantiate(&mut store, &self.component, &linker)
-                .map_err(|e| ProtocolError {
+            AgentWorld::instantiate(&mut store, &self.component, &linker).map_err(|e| {
+                ProtocolError {
                     code: "instantiate_error".into(),
                     message: e.to_string(),
-                })?;
+                }
+            })?;
 
         // Call chat(input_json) — the guest sets up the agent and returns
         // a lazy event-stream resource (no work done yet).
@@ -288,15 +354,12 @@ impl Agent for WasmAgentWithHttp {
         Output = Result<impl futures::Stream<Item = Self::Response>, Self::Error>,
     > {
         async move {
-            let input_json = serde_json::to_string(&req).map_err(|e| {
-                ProtocolError {
-                    code: "serialize_error".into(),
-                    message: e.to_string(),
-                }
+            let input_json = serde_json::to_string(&req).map_err(|e| ProtocolError {
+                code: "serialize_error".into(),
+                message: e.to_string(),
             })?;
 
-            let (mut store, bindings, stream_resource) =
-                self.init_guest(&input_json)?;
+            let (mut store, bindings, stream_resource) = self.init_guest(&input_json)?;
 
             // Return a lazy stream — each poll calls guest next() once,
             // which may trigger HTTP calls back through the host.
@@ -308,14 +371,35 @@ impl Agent for WasmAgentWithHttp {
                         .call_next(&mut store, stream_resource)
                     {
                         Ok(Some(json)) => {
-                            if let Ok(event) =
-                                serde_json::from_str::<ProtocolEvent>(&json)
-                            {
-                                yield event;
+                            match serde_json::from_str::<ProtocolEvent>(&json) {
+                                Ok(event) => yield event,
+                                Err(error) => {
+                                    let event_type = serde_json::from_str::<serde_json::Value>(&json)
+                                        .ok()
+                                        .and_then(|value| value.get("type").and_then(|field| field.as_str()).map(ToString::to_string));
+                                    let message = match event_type {
+                                        Some(event_type) => format!(
+                                            "Failed to parse guest protocol event of type '{}': {}",
+                                            event_type, error
+                                        ),
+                                        None => format!("Failed to parse guest protocol event: {}", error),
+                                    };
+                                    yield ProtocolEvent::Error {
+                                        message,
+                                        code: Some("guest_event_parse_error".into()),
+                                    };
+                                    break;
+                                }
                             }
                         }
                         Ok(None) => break,
-                        Err(_) => break,
+                        Err(error) => {
+                            yield ProtocolEvent::Error {
+                                message: format!("Guest event stream failed: {}", error),
+                                code: Some("guest_event_stream_error".into()),
+                            };
+                            break;
+                        }
                     }
                 }
             };
