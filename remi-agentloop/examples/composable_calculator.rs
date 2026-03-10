@@ -117,6 +117,8 @@ where
                 }
                 // Resume passes straight through — state belongs to innermost
                 resume @ LoopInput::Resume { .. } => resume,
+                // Cancel also passes through unchanged
+                cancel @ LoopInput::Cancel { .. } => cancel,
             };
 
             let mut next_input = Some(first_input);
@@ -182,21 +184,21 @@ where
                                                                 delta: d,
                                                             };
                                                         }
-                                                        ToolOutput::Result(r) => {
-                                                            last_result = Some(r);
+                                                        ToolOutput::Result(c) => {
+                                                            last_result = Some(c);
                                                         }
                                                     }
                                                 }
-                                                if let Some(result) = last_result {
+                                                if let Some(content) = last_result {
                                                     yield AgentEvent::ToolResult {
                                                         id: tool_call_id.clone(),
                                                         name: tc.name.clone(),
-                                                        result: result.clone(),
+                                                        result: content.text_content(),
                                                     };
                                                     all_outcomes.push(ToolCallOutcome::Result {
                                                         tool_call_id,
                                                         tool_name: tc.name.clone(),
-                                                        result,
+                                                        content,
                                                     });
                                                 }
                                             }
@@ -326,9 +328,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 } => {
                     eprintln!("  [tokens ↑{prompt_tokens} ↓{completion_tokens}]");
                 }
-                AgentEvent::NewMessages(msgs) => {
-                    eprintln!("  [+{} messages persisted]", msgs.len());
-                    history.extend(msgs);
+                AgentEvent::Checkpoint(cp) => {
+                    history = cp.state.messages.clone();
+                    eprintln!("  [checkpoint persisted: {} messages]", history.len());
                 }
                 AgentEvent::Done => {
                     println!();

@@ -269,6 +269,18 @@ impl Message {
         }
     }
 
+    /// Tool result with rich content (text and/or images).
+    pub fn tool_result_content(tool_call_id: impl Into<String>, content: Content) -> Self {
+        Self {
+            id: MessageId::new(),
+            role: Role::Tool,
+            content,
+            tool_calls: None,
+            tool_call_id: Some(tool_call_id.into()),
+            reasoning_content: None,
+        }
+    }
+
     pub fn user_multimodal(parts: Vec<ContentPart>) -> Self {
         Self {
             id: MessageId::new(),
@@ -459,11 +471,11 @@ pub struct ToolCallResult {
 /// Outcome of executing a tool externally — fed back into [`step()`](crate::state::step)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ToolCallOutcome {
-    /// Tool executed successfully
+    /// Tool executed successfully (content may include text and/or images)
     Result {
         tool_call_id: String,
         tool_name: String,
-        result: String,
+        content: Content,
     },
     /// Tool execution failed
     Error {

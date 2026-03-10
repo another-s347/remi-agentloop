@@ -1,15 +1,15 @@
 [workspace]
 members = [
-    "remi-core",
-    "remi-transport",
-    "remi-model",
-    "remi-tool",
+    "remi-agentloop-core",
+    "remi-agentloop-transport",
+    "remi-agentloop-model",
+    "remi-agentloop-tool",
     "remi-agentloop",
     "remi-agentloop-macros",
     "remi-agentloop-guest",
     "remi-agentloop-wasm",
-    "remi-cli",
-    "remi-deepagent",
+    "remi-agentloop-cli",
+    "remi-agentloop-deepagent",
 ]
 exclude = [
     "examples/wasm-calculator-guest",

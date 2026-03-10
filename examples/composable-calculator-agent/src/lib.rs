@@ -181,21 +181,21 @@ where
                                                                 delta: d,
                                                             };
                                                         }
-                                                        ToolOutput::Result(r) => {
-                                                            last_result = Some(r);
+                                                        ToolOutput::Result(c) => {
+                                                            last_result = Some(c);
                                                         }
                                                     }
                                                 }
-                                                if let Some(result) = last_result {
+                                                if let Some(content) = last_result {
                                                     yield AgentEvent::ToolResult {
                                                         id: tool_call_id.clone(),
                                                         name: tc.name.clone(),
-                                                        result: result.clone(),
+                                                        result: content.text_content(),
                                                     };
                                                     all_outcomes.push(ToolCallOutcome::Result {
                                                         tool_call_id,
                                                         tool_name: tc.name.clone(),
-                                                        result,
+                                                        content,
                                                     });
                                                 }
                                             }

@@ -5,7 +5,7 @@ use futures::Stream;
 use serde::{Deserialize, Serialize};
 use crate::config::AgentConfig;
 use crate::error::AgentError;
-use crate::types::{InterruptId, ResumePayload, RunId, ThreadId};
+use crate::types::{Content, InterruptId, ResumePayload, RunId, ThreadId};
 
 // ── ToolOutput ────────────────────────────────────────────────────────────────
 
@@ -14,8 +14,15 @@ use crate::types::{InterruptId, ResumePayload, RunId, ThreadId};
 pub enum ToolOutput {
     /// 进度/增量文本
     Delta(String),
-    /// 工具执行最终结果
-    Result(String),
+    /// 工具执行最终结果（可含多张图片）
+    Result(Content),
+}
+
+impl ToolOutput {
+    /// 便利构造：纯文字结果
+    pub fn text(s: impl Into<String>) -> Self {
+        ToolOutput::Result(Content::text(s))
+    }
 }
 
 // ── ToolContext ────────────────────────────────────────────────────────────────

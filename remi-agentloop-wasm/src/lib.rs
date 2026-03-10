@@ -243,11 +243,11 @@ fn rust_outcome_to_wit(o: remi_agentloop::types::ToolCallOutcome) -> wit::ToolCa
         remi_agentloop::types::ToolCallOutcome::Result {
             tool_call_id,
             tool_name,
-            result,
+            content,
         } => wit::ToolCallOutcome::Result(wit::ToolCallResult {
             tool_call_id,
             tool_name,
-            value: result,
+            content: rust_content_to_wit(content),
         }),
         remi_agentloop::types::ToolCallOutcome::Error {
             tool_call_id,
@@ -339,7 +339,7 @@ fn wit_outcome_to_rust(o: wit::ToolCallOutcome) -> remi_agentloop::types::ToolCa
         wit::ToolCallOutcome::Result(r) => remi_agentloop::types::ToolCallOutcome::Result {
             tool_call_id: r.tool_call_id,
             tool_name: r.tool_name,
-            result: r.value,
+            content: wit_content_to_rust(r.content),
         },
         wit::ToolCallOutcome::Error(e) => remi_agentloop::types::ToolCallOutcome::Error {
             tool_call_id: e.tool_call_id,

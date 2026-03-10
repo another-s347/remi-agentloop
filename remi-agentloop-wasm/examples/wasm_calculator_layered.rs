@@ -120,7 +120,7 @@ where
                                 results.push(ToolCallOutcome::Result {
                                     tool_call_id: tc.id.clone(),
                                     tool_name: tc.name.clone(),
-                                    result: fmt_num(r),
+                                    content: remi_agentloop::types::Content::text(fmt_num(r)),
                                 });
                             }
                             resume = Some(LoopInput::Resume {

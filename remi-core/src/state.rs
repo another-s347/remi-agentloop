@@ -284,8 +284,8 @@ pub fn step<M: ChatModel>(
             Action::ToolResults(outcomes) => {
                 for outcome in outcomes {
                     match outcome {
-                        ToolCallOutcome::Result { tool_call_id, result, .. } => {
-                            state.messages.push(Message::tool_result(&tool_call_id, &result));
+                        ToolCallOutcome::Result { tool_call_id, content, .. } => {
+                            state.messages.push(Message::tool_result_content(&tool_call_id, content));
                         }
                         ToolCallOutcome::Error { tool_call_id, error, .. } => {
                             state.messages.push(Message::tool_result(&tool_call_id, &format!("error: {error}")));

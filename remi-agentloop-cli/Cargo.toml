@@ -1,0 +1,50 @@
+[package]
+name = "remi-agentloop-cli"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "CLI toolchain for building remi-agentloop agents into WASM targets"
+
+[[bin]]
+name = "remi"
+path = "src/main.rs"
+
+[features]
+# Enable the `remi dev` hot-reload server subcommand.
+# Pulls in the WASM runtime and async HTTP/SSE server stack.
+dev = [
+    "dep:remi-agentloop-wasm",
+    "dep:remi-agentloop",
+    "dep:notify",
+    "dep:tokio",
+    "dep:tokio-stream",
+    "dep:futures",
+    "dep:rust-embed",
+    "dep:mime_guess",
+    "dep:tower-http",
+    "dep:axum",
+    "dep:serde_json",
+]
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+toml_edit = "0.22"
+serde = { version = "1", features = ["derive"] }
+tempfile = "3"
+
+# Optional deps for `remi dev`
+remi-agentloop-wasm = { path = "../remi-agentloop-wasm", features = [
+    "dev-server",
+], optional = true }
+remi-agentloop = { path = "../remi-agentloop", features = [
+    "http-server",
+], optional = true }
+notify = { version = "6", optional = true }
+tokio = { version = "1", features = ["full"], optional = true }
+tokio-stream = { version = "0.1", features = ["sync"], optional = true }
+futures = { version = "0.3", optional = true }
+rust-embed = { version = "8", optional = true }
+mime_guess = { version = "2", optional = true }
+tower-http = { version = "0.5", features = ["cors"], optional = true }
+axum = { version = "0.7", optional = true }
+serde_json = { version = "1", optional = true }

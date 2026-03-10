@@ -126,7 +126,7 @@ fn execute_tools(tool_calls: &[ParsedToolCall]) -> Vec<ToolCallOutcome> {
             ToolCallOutcome::Result {
                 tool_call_id: tc.id.clone(),
                 tool_name: tc.name.clone(),
-                result: result_str,
+                content: remi_agentloop::types::Content::text(result_str),
             }
         })
         .collect()

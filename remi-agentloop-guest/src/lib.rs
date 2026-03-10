@@ -168,7 +168,7 @@ interface agent {
     record tool-call-result {
         tool-call-id: string,
         tool-name: string,
-        value: string,
+        content: content,
     }
     record tool-call-error {
         tool-call-id: string,
@@ -463,7 +463,8 @@ macro_rules! export_agent {
             pub fn wit_outcome_to_rust(o: wit::ToolCallOutcome) -> $crate::ToolCallOutcome {
                 match o {
                     wit::ToolCallOutcome::Result(r) => $crate::ToolCallOutcome::Result {
-                        tool_call_id: r.tool_call_id, tool_name: r.tool_name, result: r.value,
+                        tool_call_id: r.tool_call_id, tool_name: r.tool_name,
+                        content: __remi_convert::wit_content_to_rust(r.content),
                     },
                     wit::ToolCallOutcome::Error(e) => $crate::ToolCallOutcome::Error {
                         tool_call_id: e.tool_call_id, tool_name: e.tool_name, error: e.err_msg,
@@ -473,8 +474,11 @@ macro_rules! export_agent {
 
             pub fn rust_outcome_to_wit(o: $crate::ToolCallOutcome) -> wit::ToolCallOutcome {
                 match o {
-                    $crate::ToolCallOutcome::Result { tool_call_id, tool_name, result } => {
-                        wit::ToolCallOutcome::Result(wit::ToolCallResult { tool_call_id, tool_name, value: result })
+                    $crate::ToolCallOutcome::Result { tool_call_id, tool_name, content } => {
+                        wit::ToolCallOutcome::Result(wit::ToolCallResult {
+                            tool_call_id, tool_name,
+                            content: __remi_convert::rust_content_to_wit(content),
+                        })
                     }
                     $crate::ToolCallOutcome::Error { tool_call_id, tool_name, error } => {
                         wit::ToolCallOutcome::Error(wit::ToolCallError { tool_call_id, tool_name, err_msg: error })

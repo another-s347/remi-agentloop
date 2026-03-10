@@ -96,6 +96,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     use std::io::Write;
                     let _ = std::io::stdout().flush();
                 }
+                StepEvent::ReasoningStart => {
+                    eprintln!("  [step yields] ReasoningStart");
+                }
+                StepEvent::ReasoningEnd { content } => {
+                    eprintln!("  [step yields] ReasoningEnd ({} chars)", content.chars().count());
+                }
                 StepEvent::ToolCallStart { id, name } => {
                     eprintln!("  [step yields] ToolCallStart: id={id} name={name}");
                 }
@@ -161,7 +167,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     outcomes.push(ToolCallOutcome::Result {
                         tool_call_id: tc.id.clone(),
                         tool_name: tc.name.clone(),
-                        result,
+                        content: Content::text(result),
                     });
                 }
 

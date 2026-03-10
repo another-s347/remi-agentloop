@@ -28,8 +28,10 @@ pub fn tool(_attr: TokenStream, item: TokenStream) -> TokenStream {
 
 /// Detect what kind of return type the user wrote.
 enum ReturnMode {
-    /// Simple value like String, f64, etc. — auto-wrap with to_string() + stream
+    /// Simple value like String, f64, etc. — auto-wrap with to_string() + Content::text()
     SimpleValue,
+    /// `Content` — rich multimodal result, wrap directly in ToolOutput::Result
+    ContentValue,
     /// `ToolResult<SomeValue>` — user handles Output/Interrupt, we map inner to stream
     ToolResultValue,
     /// `ToolResult<impl Stream<Item = ToolOutput>>` — full control, pass through
@@ -48,6 +50,11 @@ fn detect_return_mode(ret: &ReturnType) -> ReturnMode {
                 } else {
                     ReturnMode::ToolResultValue
                 }
+            } else if ts == "Content"
+                || ts.ends_with("::Content")
+                || ts.ends_with("::types::Content")
+            {
+                ReturnMode::ContentValue
             } else {
                 ReturnMode::SimpleValue
             }
@@ -71,7 +78,11 @@ fn tool_impl(func: ItemFn) -> syn::Result<TokenStream2> {
 
     // Build JSON Schema properties (only for tool args, not ctx/resume)
     let schema_props = build_schema_props(&extracted.tool_params);
-    let required_fields: Vec<&str> = extracted.tool_params.iter().map(|(name, _)| name.as_str()).collect();
+    let required_fields: Vec<&str> = extracted
+        .tool_params
+        .iter()
+        .map(|(name, _)| name.as_str())
+        .collect();
 
     // Build argument extraction in execute()
     let arg_extractions = build_arg_extractions(&extracted.tool_params);
@@ -114,7 +125,25 @@ fn tool_impl(func: ItemFn) -> syn::Result<TokenStream2> {
                     let result_str = result.to_string();
                     Ok(::remi_agentloop::tool::ToolResult::Output(
                         ::async_stream::stream! {
-                            yield ::remi_agentloop::tool::ToolOutput::Result(result_str);
+                            yield ::remi_agentloop::tool::ToolOutput::Result(
+                                ::remi_agentloop::types::Content::text(result_str)
+                            );
+                        }
+                    ))
+                }
+            }
+        }
+        ReturnMode::ContentValue => {
+            // User returns Content directly — wrap in ToolOutput::Result
+            quote! {
+                async move {
+                    #ctx_binding
+                    #resume_binding
+                    #(#arg_extractions)*
+                    let result: #ret_type = { #block };
+                    Ok(::remi_agentloop::tool::ToolResult::Output(
+                        ::async_stream::stream! {
+                            yield ::remi_agentloop::tool::ToolOutput::Result(result);
                         }
                     ))
                 }
@@ -133,7 +162,9 @@ fn tool_impl(func: ItemFn) -> syn::Result<TokenStream2> {
                             let result_str = val.to_string();
                             Ok(::remi_agentloop::tool::ToolResult::Output(
                                 ::async_stream::stream! {
-                                    yield ::remi_agentloop::tool::ToolOutput::Result(result_str);
+                                    yield ::remi_agentloop::tool::ToolOutput::Result(
+                                        ::remi_agentloop::types::Content::text(result_str)
+                                    );
                                 }
                             ))
                         }
@@ -280,7 +311,11 @@ fn extract_params_v2(
         }
     }
 
-    Ok(ExtractedParams { tool_params, has_ctx, has_resume })
+    Ok(ExtractedParams {
+        tool_params,
+        has_ctx,
+        has_resume,
+    })
 }
 
 fn type_to_json_schema_type(ty: &Type) -> String {

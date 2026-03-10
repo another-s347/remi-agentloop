@@ -133,7 +133,7 @@ interface agent {
     record tool-call-result {
         tool-call-id: string,
         tool-name: string,
-        value: string,
+        content: content,
     }
 
     record tool-call-error {

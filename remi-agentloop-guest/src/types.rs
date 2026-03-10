@@ -243,7 +243,7 @@ pub enum ToolCallOutcome {
     Result {
         tool_call_id: String,
         tool_name: String,
-        result: String,
+        content: Content,
     },
     Error {
         tool_call_id: String,

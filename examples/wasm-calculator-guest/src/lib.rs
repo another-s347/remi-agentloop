@@ -56,7 +56,8 @@ impl GuestAgent for CalculatorGuest {
                     .map_err(|e| format!("bad state: {e}"))?;
 
                 let value = match results.first() {
-                    Some(ToolCallOutcome::Result { result, .. }) => result
+                    Some(ToolCallOutcome::Result { content, .. }) => content
+                        .text_content()
                         .parse::<f64>()
                         .map_err(|e| format!("bad result: {e}"))?,
                     Some(ToolCallOutcome::Error { error, .. }) => {

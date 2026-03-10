@@ -145,7 +145,7 @@ async fn analyze_data(
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
         // 最终结果
-        yield ToolOutput::Result(format!("Analysis complete: {dataset} contains 42 records."));
+        yield ToolOutput::text(format!("Analysis complete: {dataset} contains 42 records."));
     })
 }
 
@@ -194,7 +194,7 @@ impl Tool for SummarizeTool {
             );
 
             Ok(ToolResult::Output(async_stream::stream! {
-                yield ToolOutput::Result(summary);
+                yield ToolOutput::text(summary);
             }))
         }
     }
@@ -254,15 +254,15 @@ impl Tool for FullFeatureTool {
 
             Ok(ToolResult::Output(async_stream::stream! {
                 if let Some(val) = resume_val {
-                    yield ToolOutput::Result(format!("Resumed with: {val}"));
+                    yield ToolOutput::text(format!("Resumed with: {val}"));
                 } else if is_stream {
                     for i in 1..=5 {
                         yield ToolOutput::Delta(format!("Step {i}/5...\n"));
                         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
                     }
-                    yield ToolOutput::Result("All 5 steps complete!".to_string());
+                    yield ToolOutput::text("All 5 steps complete!".to_string());
                 } else {
-                    yield ToolOutput::Result(format!("Quick action done: {}", action));
+                    yield ToolOutput::text(format!("Quick action done: {}", action));
                 }
             }))
         }
@@ -302,9 +302,9 @@ async fn deploy_service(
                 tokio::time::sleep(std::time::Duration::from_millis(200)).await;
                 yield ToolOutput::Delta("Rolling out...\n".to_string());
                 tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-                yield ToolOutput::Result(format!("✓ {service_name} deployed to {environment} successfully!"));
+                yield ToolOutput::text(format!("✓ {service_name} deployed to {environment} successfully!"));
             } else {
-                yield ToolOutput::Result("Deployment cancelled by operator.".to_string());
+                yield ToolOutput::text("Deployment cancelled by operator.".to_string());
             }
         })
     } else {

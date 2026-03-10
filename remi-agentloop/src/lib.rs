@@ -1,8 +1,42 @@
-//! Facade crate — re-exports everything from the remi sub-crates.
+//! # remi-agentloop
 //!
-//! Users can depend on `remi-agentloop` to get the full framework,
-//! or depend on individual sub-crates (`remi-core`, `remi-model`,
-//! `remi-tool`, `remi-transport`) for finer-grained control.
+//! Facade crate — re-exports everything from the `remi-agentloop-*` sub-crates
+//! so users can add a single dependency instead of listing each sub-crate.
+//!
+//! ## Usage
+//!
+//! ```toml
+//! # Cargo.toml
+//! [dependencies]
+//! remi-agentloop = { version = "*", features = ["http-client"] }
+//! ```
+//!
+//! ```ignore
+//! use remi_agentloop::prelude::*;
+//!
+//! let agent = AgentBuilder::new()
+//!     .model(OpenAIClient::from_env())
+//!     .system("You are a helpful assistant.")
+//!     .max_turns(10)
+//!     .build();
+//!
+//! let mut stream = agent.chat("Hello!".into()).await?;
+//! // …
+//! ```
+//!
+//! ## Feature flags
+//!
+//! | Feature | Description |
+//! |---------|-------------|
+//! | `http-client` | Enable [`ReqwestTransport`] and `OpenAIClient::from_env()` |
+//! | `tool-bash` | Enable [`BashTool`] |
+//! | `tool-fs` | Enable [`FsTool`] |
+//! | `tool-bash-virtual` | In-process sandboxed bash |
+//! | `tool-fs-virtual` | In-process sandboxed filesystem |
+//! | `tracing-langsmith` | Enable [`LangSmithTracer`] |
+//!
+//! For fine-grained control, depend on the individual sub-crates directly
+//! (`remi-agentloop-core`, `remi-agentloop-model`, etc.).
 
 // ── Re-exports from remi-core ─────────────────────────────────────────────────
 

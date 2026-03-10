@@ -23,10 +23,10 @@ tools = ["remi-tool/tools"]
 tui = ["dep:ratatui", "dep:crossterm", "http-client"]
 
 [dependencies]
-remi-core = { path = "../remi-core", default-features = false }
-remi-transport = { path = "../remi-transport" }
-remi-model = { path = "../remi-model" }
-remi-tool = { path = "../remi-tool" }
+remi-core = { path = "../remi-agentloop-core", package = "remi-agentloop-core", default-features = false }
+remi-transport = { path = "../remi-agentloop-transport", package = "remi-agentloop-transport" }
+remi-model = { path = "../remi-agentloop-model", package = "remi-agentloop-model" }
+remi-tool = { path = "../remi-agentloop-tool", package = "remi-agentloop-tool" }
 remi-agentloop-macros = { path = "../remi-agentloop-macros" }
 
 futures = { workspace = true }

@@ -18,7 +18,7 @@ dev-server = [
 [dependencies]
 remi-agentloop = { path = "../remi-agentloop", default-features = false }
 remi-agentloop-guest = { path = "../remi-agentloop-guest" }
-remi-core = { path = "../remi-core" }
+remi-core = { path = "../remi-agentloop-core", package = "remi-agentloop-core" }
 wasmtime = { workspace = true }
 wasmtime-wasi = { workspace = true }
 futures = { workspace = true }

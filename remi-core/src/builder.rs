@@ -14,7 +14,7 @@ use crate::state::Action;
 use crate::tool::registry::{DefaultToolRegistry, ToolRegistry};
 use crate::tool::Tool;
 use crate::tracing::{DynTracer, ResumeTrace, Tracer};
-use crate::types::{AgentEvent, ChatInput, Message, Role, ThreadId, ToolCallOutcome};
+use crate::types::{AgentEvent, ChatInput, Content, Message, Role, ThreadId, ToolCallOutcome};
 
 // ── Typestate markers ─────────────────────────────────────────────────────────
 
@@ -469,7 +469,7 @@ impl<M: ChatModel, S: ContextStore, C: CheckpointStore> BuiltAgent<M, S, C> {
                     outcomes.push(ToolCallOutcome::Result {
                         tool_call_id: tr.id.clone(),
                         tool_name: tr.name.clone(),
-                        result: tr.result.clone(),
+                        content: Content::text(tr.result.clone()),
                     });
                 }
 
@@ -482,7 +482,7 @@ impl<M: ChatModel, S: ContextStore, C: CheckpointStore> BuiltAgent<M, S, C> {
                     outcomes.push(ToolCallOutcome::Result {
                         tool_call_id: intr.tool_call_id.clone(),
                         tool_name: intr.tool_name.clone(),
-                        result: result_str,
+                        content: Content::text(result_str),
                     });
                 }
 

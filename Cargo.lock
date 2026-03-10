@@ -2073,15 +2073,78 @@ dependencies = [
  "crossterm",
  "futures",
  "ratatui",
+ "remi-agentloop-core",
  "remi-agentloop-macros",
- "remi-core",
- "remi-model",
- "remi-tool",
- "remi-transport",
+ "remi-agentloop-model",
+ "remi-agentloop-tool",
+ "remi-agentloop-transport",
  "serde",
  "serde_json",
  "tokio",
  "tokio-stream",
+]
+
+[[package]]
+name = "remi-agentloop-cli"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "clap",
+ "futures",
+ "mime_guess",
+ "notify",
+ "remi-agentloop",
+ "remi-agentloop-wasm",
+ "rust-embed",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-stream",
+ "toml_edit",
+ "tower-http 0.5.2",
+]
+
+[[package]]
+name = "remi-agentloop-core"
+version = "0.1.0"
+dependencies = [
+ "async-stream",
+ "base64",
+ "chrono",
+ "futures",
+ "pin-project-lite",
+ "remi-agentloop-macros",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "tokio",
+ "tokio-stream",
+ "uuid",
+ "web-time",
+]
+
+[[package]]
+name = "remi-agentloop-deepagent"
+version = "0.1.0"
+dependencies = [
+ "async-stream",
+ "bashkit",
+ "crossterm",
+ "futures",
+ "ratatui",
+ "remi-agentloop-core",
+ "remi-agentloop-model",
+ "remi-agentloop-tool",
+ "remi-agentloop-transport",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-stream",
+ "toml",
+ "uuid",
 ]
 
 [[package]]
@@ -2105,6 +2168,48 @@ dependencies = [
 ]
 
 [[package]]
+name = "remi-agentloop-model"
+version = "0.1.0"
+dependencies = [
+ "async-stream",
+ "futures",
+ "remi-agentloop-core",
+ "remi-agentloop-transport",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "remi-agentloop-tool"
+version = "0.1.0"
+dependencies = [
+ "async-stream",
+ "async-trait",
+ "bashkit",
+ "futures",
+ "remi-agentloop-core",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "remi-agentloop-transport"
+version = "0.1.0"
+dependencies = [
+ "async-stream",
+ "axum",
+ "futures",
+ "remi-agentloop-core",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-stream",
+ "tokio-util",
+]
+
+[[package]]
 name = "remi-agentloop-wasm"
 version = "0.1.0"
 dependencies = [
@@ -2113,119 +2218,14 @@ dependencies = [
  "futures",
  "notify",
  "remi-agentloop",
+ "remi-agentloop-core",
  "remi-agentloop-guest",
- "remi-core",
  "reqwest",
  "serde_json",
  "tokio",
  "tokio-stream",
  "wasmtime",
  "wasmtime-wasi",
-]
-
-[[package]]
-name = "remi-cli"
-version = "0.1.0"
-dependencies = [
- "axum",
- "clap",
- "futures",
- "mime_guess",
- "notify",
- "remi-agentloop",
- "remi-agentloop-wasm",
- "rust-embed",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
- "tokio-stream",
- "toml_edit",
- "tower-http 0.5.2",
-]
-
-[[package]]
-name = "remi-core"
-version = "0.1.0"
-dependencies = [
- "async-stream",
- "base64",
- "chrono",
- "futures",
- "pin-project-lite",
- "remi-agentloop-macros",
- "reqwest",
- "serde",
- "serde_json",
- "thiserror 1.0.69",
- "tokio",
- "tokio-stream",
- "uuid",
- "web-time",
-]
-
-[[package]]
-name = "remi-deepagent"
-version = "0.1.0"
-dependencies = [
- "async-stream",
- "bashkit",
- "crossterm",
- "futures",
- "ratatui",
- "remi-core",
- "remi-model",
- "remi-tool",
- "remi-transport",
- "reqwest",
- "serde",
- "serde_json",
- "tokio",
- "tokio-stream",
- "toml",
- "uuid",
-]
-
-[[package]]
-name = "remi-model"
-version = "0.1.0"
-dependencies = [
- "async-stream",
- "futures",
- "remi-core",
- "remi-transport",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "remi-tool"
-version = "0.1.0"
-dependencies = [
- "async-stream",
- "async-trait",
- "bashkit",
- "futures",
- "remi-core",
- "serde",
- "serde_json",
- "tokio",
-]
-
-[[package]]
-name = "remi-transport"
-version = "0.1.0"
-dependencies = [
- "async-stream",
- "axum",
- "futures",
- "remi-core",
- "reqwest",
- "serde",
- "serde_json",
- "tokio",
- "tokio-stream",
- "tokio-util",
 ]
 
 [[package]]
