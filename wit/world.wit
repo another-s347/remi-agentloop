@@ -191,6 +191,8 @@ interface agent {
         max-tokens: option<u32>,
         /// JSON-encoded metadata blob.
         metadata-json: option<string>,
+        /// JSON-encoded initial user_state to inject (tool-managed per-thread state).
+        user-state-json: option<string>,
     }
 
     record loop-input-resume {

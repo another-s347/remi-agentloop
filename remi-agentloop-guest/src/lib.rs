@@ -570,6 +570,8 @@ macro_rules! export_agent {
                         max_tokens: s.max_tokens,
                         metadata: s.metadata_json
                             .and_then(|j| $crate::_serde_json::from_str(&j).ok()),
+                        user_state: s.user_state_json
+                            .and_then(|j| $crate::_serde_json::from_str(&j).ok()),
                     },
                     wit::LoopInput::Resume(r) => $crate::LoopInput::Resume {
                         state: wit_state_to_rust(r.state),
