@@ -76,6 +76,6 @@ wit-bindgen = "0.53"
 wasmtime = { version = "42", default-features = false, features = [
     "component-model",
     "async",
-    "cranelift-all-arch",
+    "all-arch",
 ] }
 wasmtime-wasi = "42"
