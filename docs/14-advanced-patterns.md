@@ -11,6 +11,7 @@
 | 会话分叉 | **否** | 低 | 现有 ContextStore API 已足够 |
 | Context Compact（上下文压缩） | **否** | 低–中 | `get_recent_messages` + Layer/用户侧压缩 |
 | Token/调用/时间监控 | **否** | 低 | 现有 Tracer trait 已完全覆盖 |
+| 实时打断（流式取消 + 保存已输出） | **否**（框架已支持） | 低 | `ChatInput::Cancel { partial_response }` |
 
 五种模式均可在**不修改核心架构**的情况下实现。下面逐一分析。
 
@@ -406,13 +407,74 @@ impl<S: ContextStore> ContextStoreExt for S {}
 
 ---
 
-## 5. 总结
+## 5. 实时打断（流式取消 + 保存已输出内容）
 
-当前架构的核心抽象——**ContextStore（Thread/Message 管理）+ Agent 组合（Layer/Tool/Builder）+ 强类型 ID 体系**——提供了足够的灵活性，三种高级模式**均无需修改架构**：
+> **适用场景**：需要构建实时 Agent 应用（聊天 UI、SSE 接口等），用户可在模型输出中途点击"停止"，并希望已输出的部分文字被记录进会话历史，以便后续恢复或展示。
+
+### 机制说明
+
+框架的 `ChatInput::Cancel` 是**下一次独立调用**，此时当前流已 drop，框架层无法自动获取已输出内容。因此采用"调用方积累 + 框架落盘"的分工：
+
+- **调用方**：在消费流的过程中累积 `AgentEvent::TextDelta`，收到中断信号后停止消费
+- **框架**：`cancel_loop()` 接收 `partial_response`，将其作为 assistant message 插入 state，随 `Cancelled` checkpoint 一起持久化到 `ContextStore` 和 `CheckpointStore`
+
+### 使用模式
+
+```rust
+// 1. 消费流，同时积累已输出文字
+let mut partial = String::new();
+let run_id; // 从 AgentEvent::RunStart 或 Checkpoint 事件中取得
+let mut stream = agent.chat_in_thread(&tid, "你的问题").await?;
+
+loop {
+    tokio::select! {
+        maybe_ev = stream.next() => {
+            match maybe_ev {
+                Some(AgentEvent::TextDelta(t)) => {
+                    partial.push_str(&t);
+                    send_to_ui(&t); // 实时推送给前端
+                }
+                Some(AgentEvent::Done) => break,
+                Some(_) => {}
+                None => break,
+            }
+        }
+        _ = user_cancel_signal.notified() => {
+            // 2. 用户打断——drop 当前流，携带已输出内容发起 cancel
+            drop(stream);
+            agent.chat_in_thread(
+                &tid,
+                ChatInput::Cancel {
+                    run_id,
+                    partial_response: if partial.is_empty() { None } else { Some(partial) },
+                },
+            ).await?;
+            break;
+        }
+    }
+}
+```
+
+### 保存效果
+
+- partial assistant message 被写入 `state.messages` 并持久化到 `ContextStore` 和 `CheckpointStore`
+- checkpoint status 为 `Cancelled`，下次可通过 `resume_from_checkpoint()` 或发送新消息继续对话
+- 如果打断发生在模型开始响应之前（`partial` 为空），传 `partial_response: None`，行为与原来一致
+
+### WASM 场景
+
+WASM guest 的 `run_guest()` 是同步循环（`call_next()` 逐事件拉取），不涉及 `ChatInput::Cancel`。取消逻辑由宿主在每次 `call_next()` 调用之间检查 flag 实现，已收集的 `events` Vec 直接截断返回，部分输出自然保留在 events 列表中，无需额外处理。
+
+---
+
+## 6. 总结
+
+当前架构的核心抽象——**ContextStore（Thread/Message 管理）+ Agent 组合（Layer/Tool/Builder）+ 强类型 ID 体系**——提供了足够的灵活性，各种高级模式**均无需修改核心架构**：
 
 - **Task**：Tool 内构造独立 Agent + Store，天然隔离
 - **Sub-Agent**：`Rc<ContextStore>` 共享 + 同一 ThreadId，天然复用
 - **会话分叉**：`get_messages` + `create_thread` + `append_messages` 组合即可
+- **实时打断**：调用方积累 `TextDelta`，通过 `ChatInput::Cancel { partial_response }` 落盘
 
 建议的**可选增强**（均可后续按需添加，不影响现有 API）：
 

@@ -405,10 +405,29 @@ impl<M: ChatModel, S: ContextStore, C: CheckpointStore> BuiltAgent<M, S, C> {
     ///
     /// Wraps the inner `AgentLoop::cancel()` with persistence:
     /// persists checkpoint + context, yields `Cancelled`.
+    ///
+    /// If `partial_response` is `Some`, an incomplete assistant message is
+    /// appended to `state.messages` before the checkpoint is saved, so the
+    /// partial text survives a process restart.
     fn cancel_loop<'a>(
         &'a self,
-        state: crate::state::AgentState,
+        mut state: crate::state::AgentState,
+        partial_response: Option<String>,
     ) -> impl Stream<Item = AgentEvent> + 'a {
+        // Inject the partial assistant message before handing off to cancel_run.
+        if let Some(text) = partial_response {
+            if !text.is_empty() {
+                use crate::types::{Content, Message, Role};
+                state.messages.push(Message {
+                    id: crate::types::MessageId::new(),
+                    role: Role::Assistant,
+                    content: Content::text(text),
+                    tool_calls: None,
+                    tool_call_id: None,
+                    reasoning_content: None,
+                });
+            }
+        }
         let thread_id = state.thread_id.clone();
         let run_id = state.run_id.clone();
         let inner_stream = self.inner.cancel_run(state);
@@ -448,7 +467,10 @@ impl<M: ChatModel, S: ContextStore, C: CheckpointStore> BuiltAgent<M, S, C> {
         &self,
         thread_id: &ThreadId,
     ) -> Result<Option<impl Stream<Item = AgentEvent> + '_>, AgentError> {
-        let cp = self.checkpoint_store.load_latest_by_thread(thread_id).await?;
+        let cp = self
+            .checkpoint_store
+            .load_latest_by_thread(thread_id)
+            .await?;
         match cp {
             None => Ok(None),
             Some(cp) => {
@@ -466,7 +488,8 @@ impl<M: ChatModel, S: ContextStore, C: CheckpointStore> BuiltAgent<M, S, C> {
                         run_id: cp.state.run_id.clone(),
                         payloads_count,
                         timestamp: chrono::Utc::now(),
-                    }).await;
+                    })
+                    .await;
                 }
                 Ok(Some(self.run_loop(cp.state, action, false)))
             }
@@ -582,7 +605,11 @@ impl<M: ChatModel, S: ContextStore, C: CheckpointStore> BuiltAgent<M, S, C> {
 
                 // Action is empty ToolResults because user message is already in state.messages;
                 // step() will see it and call the model.
-                Ok(Box::pin(self.run_loop(state, Action::ToolResults(vec![]), false)))
+                Ok(Box::pin(self.run_loop(
+                    state,
+                    Action::ToolResults(vec![]),
+                    false,
+                )))
             }
 
             ChatInput::Resume {
@@ -643,12 +670,20 @@ impl<M: ChatModel, S: ContextStore, C: CheckpointStore> BuiltAgent<M, S, C> {
                         run_id: state.run_id.clone(),
                         payloads_count,
                         timestamp: chrono::Utc::now(),
-                    }).await;
+                    })
+                    .await;
                 }
-                    Ok(Box::pin(self.run_loop(state, Action::ToolResults(outcomes), false)))
+                Ok(Box::pin(self.run_loop(
+                    state,
+                    Action::ToolResults(outcomes),
+                    false,
+                )))
             }
 
-            ChatInput::Cancel { run_id } => {
+            ChatInput::Cancel {
+                run_id,
+                partial_response,
+            } => {
                 // Load the latest checkpoint for this run to get the current state
                 let cp = self.checkpoint_store.load_latest_by_run(&run_id).await?;
                 let state = match cp {
@@ -662,7 +697,7 @@ impl<M: ChatModel, S: ContextStore, C: CheckpointStore> BuiltAgent<M, S, C> {
                         state
                     }
                 };
-                Ok(Box::pin(self.cancel_loop(state)))
+                Ok(Box::pin(self.cancel_loop(state, partial_response)))
             }
         }
     }

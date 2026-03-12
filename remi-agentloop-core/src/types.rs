@@ -640,6 +640,9 @@ pub enum LoopInput {
         /// Request metadata
         #[serde(skip_serializing_if = "Option::is_none")]
         metadata: Option<serde_json::Value>,
+        /// Initial user_state to inject (tool-managed per-thread state, e.g. todos)
+        #[serde(skip_serializing_if = "Option::is_none")]
+        user_state: Option<serde_json::Value>,
     },
     /// Resume from a `NeedToolExecution` with completed tool results
     #[serde(rename = "resume")]
@@ -649,6 +652,16 @@ pub enum LoopInput {
     },
     /// Cancel an in-progress run.  Produces a `Cancelled` checkpoint so the
     /// conversation can be resumed later.
+    ///
+    /// This is the **low-level** cancellation path used when you drive
+    /// [`AgentLoop`] directly and already hold the [`AgentState`].  If you
+    /// are using the high-level [`BuiltAgent`] / [`crate::BuiltAgent`] API,
+    /// use [`ChatInput::Cancel`] instead — it takes only a `run_id` and
+    /// accepts an optional [`ChatInput::Cancel::partial_response`] string to
+    /// persist text that was already streamed before the cancel arrived.
+    ///
+    /// [`AgentState`]: crate::state::AgentState
+    /// [`AgentLoop`]: crate::AgentLoop
     #[serde(rename = "cancel")]
     Cancel { state: crate::state::AgentState },
 }
@@ -664,6 +677,7 @@ impl LoopInput {
             temperature: None,
             max_tokens: None,
             metadata: None,
+            user_state: None,
         }
     }
 
@@ -677,6 +691,7 @@ impl LoopInput {
             temperature: None,
             max_tokens: None,
             metadata: None,
+            user_state: None,
         }
     }
 
@@ -737,6 +752,14 @@ impl LoopInput {
         }
         self
     }
+
+    /// Builder: set initial user_state (only applies to `Start`).
+    pub fn user_state(mut self, v: serde_json::Value) -> Self {
+        if let Self::Start { user_state, .. } = &mut self {
+            *user_state = Some(v);
+        }
+        self
+    }
 }
 
 impl From<String> for LoopInput {
@@ -788,8 +811,55 @@ pub enum ChatInput {
         payloads: Vec<ResumePayload>,
     },
     /// Cancel an in-progress run.  Saves a `Cancelled` checkpoint and
-    /// yields `AgentEvent::Cancelled` so the conversation can be resumed later.
-    Cancel { run_id: RunId },
+    /// yields [`AgentEvent::Cancelled`] so the conversation can be resumed
+    /// later via [`ChatInput::Resume`].
+    ///
+    /// # Partial streaming output
+    ///
+    /// When a user interrupts an active stream (e.g. by pressing a stop
+    /// button), the LLM may already have emitted several [`AgentEvent::TextDelta`]
+    /// events that have been displayed but not yet committed to a checkpoint.
+    /// Pass those accumulated deltas as `partial_response` so they are
+    /// persisted as an incomplete assistant message before the checkpoint is
+    /// saved.  The caller is responsible for accumulating the deltas:
+    ///
+    /// ```ignore
+    /// let mut partial = String::new();
+    ///
+    /// // Drive the active stream until the user signals cancellation.
+    /// loop {
+    ///     tokio::select! {
+    ///         Some(event) = stream.next() => {
+    ///             if let AgentEvent::TextDelta { delta, .. } = &event {
+    ///                 partial.push_str(delta);
+    ///             }
+    ///             render(event);
+    ///         }
+    ///         _ = cancel_signal.notified() => break,
+    ///     }
+    /// }
+    ///
+    /// // Send the accumulated text back so the framework persists it.
+    /// agent.chat(ChatInput::Cancel {
+    ///     run_id,
+    ///     partial_response: Some(partial).filter(|s| !s.is_empty()),
+    /// }).await;
+    /// ```
+    ///
+    /// After the cancel completes the thread's message list will contain the
+    /// partial assistant turn, so a future [`ChatInput::Resume`] gives the
+    /// model full context.
+    ///
+    /// > **WASM / single-threaded hosts**: `tokio::select!` is unavailable.
+    /// > Check a cancellation flag between `call_next()` iterations instead
+    /// > and pass the accumulated output the same way.
+    Cancel {
+        run_id: RunId,
+        /// Text already streamed in the current (incomplete) turn, if any.
+        /// See the [`ChatInput::Cancel`] doc-comment for the accumulation pattern.
+        #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+        partial_response: Option<String>,
+    },
 }
 
 impl From<String> for ChatInput {

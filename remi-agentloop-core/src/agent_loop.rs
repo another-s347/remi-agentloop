@@ -583,6 +583,7 @@ impl<M: ChatModel> crate::agent::Agent for AgentLoop<M> {
                     temperature,
                     max_tokens,
                     metadata,
+                    user_state,
                 } => {
                     let mut state = self.build_state(history);
                     if !extra_tools.is_empty() {
@@ -600,6 +601,9 @@ impl<M: ChatModel> crate::agent::Agent for AgentLoop<M> {
                     }
                     if let Some(v) = metadata {
                         state.config.metadata = Some(v);
+                    }
+                    if let Some(us) = user_state {
+                        state.user_state = us;
                     }
                     let action = Action::UserContent(content);
                     Box::pin(self.run(state, action, true))
