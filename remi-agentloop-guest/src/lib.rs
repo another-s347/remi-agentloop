@@ -419,6 +419,8 @@ macro_rules! export_agent {
                         }).collect()
                     }),
                     tool_call_id: m.tool_call_id,
+                    reasoning_content: m.reasoning_content,
+                    metadata: m.metadata_json.and_then(|j| $crate::_serde_json::from_str(&j).ok()),
                 }
             }
 
@@ -436,6 +438,8 @@ macro_rules! export_agent {
                         }).collect()
                     }),
                     tool_call_id: m.tool_call_id,
+                    reasoning_content: m.reasoning_content,
+                    metadata_json: m.metadata.map(|v| $crate::_serde_json::to_string(&v).unwrap_or_default()),
                 }
             }
 

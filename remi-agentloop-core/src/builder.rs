@@ -425,6 +425,7 @@ impl<M: ChatModel, S: ContextStore, C: CheckpointStore> BuiltAgent<M, S, C> {
                     tool_calls: None,
                     tool_call_id: None,
                     reasoning_content: None,
+                    metadata: None,
                 });
             }
         }

@@ -133,6 +133,7 @@ impl<M: ChatModel> AgentLoop<M> {
                                 tool_calls: None,
                                 tool_call_id: None,
                                 reasoning_content: None,
+                                metadata: None,
                             });
                         }
                         _ => {}

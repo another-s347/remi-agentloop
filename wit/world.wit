@@ -112,6 +112,10 @@ interface agent {
         content: content,
         tool-calls: option<list<tool-call-message>>,
         tool-call-id: option<string>,
+        /// JSON-encoded chain-of-thought reasoning text (thinking models).
+        reasoning-content: option<string>,
+        /// JSON-encoded user-defined metadata blob.
+        metadata-json: option<string>,
     }
 
     // ── Tool definitions & outcomes ──────────────────────────────────────────

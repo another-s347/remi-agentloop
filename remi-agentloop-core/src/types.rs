@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::fmt;
 use uuid::Uuid;
 
@@ -265,6 +266,9 @@ pub struct Message {
     /// Must be echoed back verbatim when replaying the conversation history.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning_content: Option<String>,
+    /// User-defined metadata attached to this message.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<Value>,
 }
 
 impl Message {
@@ -276,6 +280,7 @@ impl Message {
             tool_calls: None,
             tool_call_id: None,
             reasoning_content: None,
+            metadata: None,
         }
     }
 
@@ -287,6 +292,7 @@ impl Message {
             tool_calls: None,
             tool_call_id: None,
             reasoning_content: None,
+            metadata: None,
         }
     }
 
@@ -298,6 +304,7 @@ impl Message {
             tool_calls: None,
             tool_call_id: None,
             reasoning_content: None,
+            metadata: None,
         }
     }
 
@@ -313,7 +320,14 @@ impl Message {
             tool_calls: Some(tool_calls),
             tool_call_id: None,
             reasoning_content,
+            metadata: None,
         }
+    }
+
+    /// Attach user-defined metadata to this message.
+    pub fn with_metadata(mut self, metadata: impl Into<Value>) -> Self {
+        self.metadata = Some(metadata.into());
+        self
     }
 
     pub fn tool_result(tool_call_id: impl Into<String>, result: impl Into<String>) -> Self {
@@ -324,6 +338,7 @@ impl Message {
             tool_calls: None,
             tool_call_id: Some(tool_call_id.into()),
             reasoning_content: None,
+            metadata: None,
         }
     }
 
@@ -336,6 +351,7 @@ impl Message {
             tool_calls: None,
             tool_call_id: Some(tool_call_id.into()),
             reasoning_content: None,
+            metadata: None,
         }
     }
 
@@ -347,6 +363,7 @@ impl Message {
             tool_calls: None,
             tool_call_id: None,
             reasoning_content: None,
+            metadata: None,
         }
     }
 }

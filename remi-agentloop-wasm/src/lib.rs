@@ -227,6 +227,10 @@ fn rust_msg_to_wit(m: remi_agentloop::types::Message) -> wit::Message {
                 .collect()
         }),
         tool_call_id: m.tool_call_id,
+        reasoning_content: m.reasoning_content,
+        metadata_json: m
+            .metadata
+            .map(|v| serde_json::to_string(&v).unwrap_or_default()),
     }
 }
 
@@ -413,7 +417,8 @@ fn wit_msg_to_rust(m: wit::Message) -> remi_agentloop::types::Message {
                 .collect()
         }),
         tool_call_id: m.tool_call_id,
-        reasoning_content: None,
+        reasoning_content: m.reasoning_content,
+        metadata: m.metadata_json.and_then(|j| serde_json::from_str(&j).ok()),
     }
 }
 

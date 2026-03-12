@@ -158,6 +158,12 @@ pub struct Message {
     pub tool_calls: Option<Vec<ToolCallMessage>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
+    /// Chain-of-thought / reasoning text returned by thinking models.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_content: Option<String>,
+    /// User-defined metadata attached to this message.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
