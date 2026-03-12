@@ -32,11 +32,23 @@ impl<A, S: SkillStore> SkillAgent<A, S> {
     pub fn new(inner: A, store: S) -> Self {
         let store = Arc::new(store);
         let mut tools = DefaultToolRegistry::new();
-        tools.register(SkillSaveTool   { store: Arc::clone(&store) });
-        tools.register(SkillGetTool    { store: Arc::clone(&store) });
-        tools.register(SkillListTool   { store: Arc::clone(&store) });
-        tools.register(SkillDeleteTool { store: Arc::clone(&store) });
-        Self { inner, tools, store }
+        tools.register(SkillSaveTool {
+            store: Arc::clone(&store),
+        });
+        tools.register(SkillGetTool {
+            store: Arc::clone(&store),
+        });
+        tools.register(SkillListTool {
+            store: Arc::clone(&store),
+        });
+        tools.register(SkillDeleteTool {
+            store: Arc::clone(&store),
+        });
+        Self {
+            inner,
+            tools,
+            store,
+        }
     }
 
     fn tool_definitions(&self) -> Vec<ToolDefinition> {
@@ -69,6 +81,7 @@ where
                 temperature,
                 max_tokens,
                 metadata,
+                user_state,
             } => {
                 extra_tools.extend(self.tool_definitions());
                 LoopInput::Start {
@@ -79,6 +92,7 @@ where
                     temperature,
                     max_tokens,
                     metadata,
+                    user_state,
                 }
             }
             other => other,
@@ -175,8 +189,7 @@ where
 }
 
 fn make_tool_ctx(state: &remi_core::state::AgentState) -> ToolContext {
-    let user_state =
-        std::sync::Arc::new(std::sync::RwLock::new(state.user_state.clone()));
+    let user_state = std::sync::Arc::new(std::sync::RwLock::new(state.user_state.clone()));
     ToolContext {
         config: remi_core::config::AgentConfig::default(),
         thread_id: Some(state.thread_id.clone()),

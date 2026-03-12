@@ -28,7 +28,7 @@ use crate::events::DeepAgentEvent;
 // ── Defaults ──────────────────────────────────────────────────────────────────
 
 const DEFAULT_THRESHOLD_CHARS: usize = 80_000; // ≈ 20k tokens
-const DEFAULT_KEEP_RECENT: usize = 10;         // always preserve last 10 messages
+const DEFAULT_KEEP_RECENT: usize = 10; // always preserve last 10 messages
 
 // ── CompressingLayer ──────────────────────────────────────────────────────────
 
@@ -92,8 +92,9 @@ where
         let split_at = history.len() - keep_n;
 
         // Never summarise system messages — preserve them at the front
-        let (sys_msgs, rest): (Vec<_>, Vec<_>) =
-            history[..split_at].iter().partition(|m| m.role == Role::System);
+        let (sys_msgs, rest): (Vec<_>, Vec<_>) = history[..split_at]
+            .iter()
+            .partition(|m| m.role == Role::System);
         let to_summarise: Vec<_> = rest;
         let recent = history[split_at..].to_vec();
 
@@ -179,6 +180,7 @@ where
                 temperature,
                 max_tokens,
                 metadata,
+                user_state,
             } => {
                 let history = self.maybe_compress(history).await?;
                 LoopInput::Start {
@@ -189,6 +191,7 @@ where
                     temperature,
                     max_tokens,
                     metadata,
+                    user_state,
                 }
             }
             other => other,

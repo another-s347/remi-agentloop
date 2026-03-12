@@ -657,6 +657,10 @@ pub enum LoopInput {
         /// Request metadata
         #[serde(skip_serializing_if = "Option::is_none")]
         metadata: Option<serde_json::Value>,
+        /// Metadata to attach to the user message created from `content`.
+        /// Stored alongside the message in conversation history.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        message_metadata: Option<Value>,
         /// Initial user_state to inject (tool-managed per-thread state, e.g. todos)
         #[serde(skip_serializing_if = "Option::is_none")]
         user_state: Option<serde_json::Value>,
@@ -694,6 +698,7 @@ impl LoopInput {
             temperature: None,
             max_tokens: None,
             metadata: None,
+            message_metadata: None,
             user_state: None,
         }
     }
@@ -708,6 +713,7 @@ impl LoopInput {
             temperature: None,
             max_tokens: None,
             metadata: None,
+            message_metadata: None,
             user_state: None,
         }
     }
@@ -766,6 +772,14 @@ impl LoopInput {
     pub fn metadata(mut self, v: serde_json::Value) -> Self {
         if let Self::Start { metadata, .. } = &mut self {
             *metadata = Some(v);
+        }
+        self
+    }
+
+    /// Builder: set metadata on the user message created from `content` (only applies to `Start`).
+    pub fn message_metadata(mut self, v: serde_json::Value) -> Self {
+        if let Self::Start { message_metadata, .. } = &mut self {
+            *message_metadata = Some(v);
         }
         self
     }

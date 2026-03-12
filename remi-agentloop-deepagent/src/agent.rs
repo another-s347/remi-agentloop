@@ -566,6 +566,7 @@ fn inject_extra_tools(input: LoopInput, extra: Vec<ToolDefinition>) -> LoopInput
             temperature,
             max_tokens,
             metadata,
+            user_state,
         } => {
             extra_tools.extend(extra);
             LoopInput::Start {
@@ -576,6 +577,7 @@ fn inject_extra_tools(input: LoopInput, extra: Vec<ToolDefinition>) -> LoopInput
                 temperature,
                 max_tokens,
                 metadata,
+                user_state,
             }
         }
         other => other,

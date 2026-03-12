@@ -243,7 +243,11 @@ pub enum Action {
     /// Start with a plain-text user message.
     UserMessage(String),
     /// Start with rich (multimodal) content.
-    UserContent(Content),
+    UserContent {
+        content: Content,
+        /// Optional metadata to attach to the created user message.
+        message_metadata: Option<serde_json::Value>,
+    },
     /// Feed back tool execution results (response to `NeedToolExecution`).
     ToolResults(Vec<ToolCallOutcome>),
 }
@@ -334,7 +338,7 @@ pub fn step<M: ChatModel>(
                 }
                 state.messages.push(Message::user(&text));
             }
-            Action::UserContent(content) => {
+            Action::UserContent { content, message_metadata } => {
                 if let Some(ref sys) = state.system_prompt {
                     if !state.messages.first().is_some_and(|m| matches!(m.role, crate::types::Role::System)) {
                         state.messages.insert(0, Message::system(sys));
@@ -347,7 +351,7 @@ pub fn step<M: ChatModel>(
                     tool_calls: None,
                     tool_call_id: None,
                     reasoning_content: None,
-                    metadata: None,
+                    metadata: message_metadata,
                 });
             }
             Action::ToolResults(outcomes) => {

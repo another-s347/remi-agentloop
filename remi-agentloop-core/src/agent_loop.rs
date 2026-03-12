@@ -125,7 +125,7 @@ impl<M: ChatModel> AgentLoop<M> {
                         Action::UserMessage(text) => {
                             trace_input.push(Message::user(text));
                         }
-                        Action::UserContent(content) => {
+                        Action::UserContent { ref content, .. } => {
                             trace_input.push(Message {
                                 id: crate::types::MessageId::new(),
                                 role: crate::types::Role::User,
@@ -584,6 +584,7 @@ impl<M: ChatModel> crate::agent::Agent for AgentLoop<M> {
                     temperature,
                     max_tokens,
                     metadata,
+                    message_metadata,
                     user_state,
                 } => {
                     let mut state = self.build_state(history);
@@ -606,7 +607,7 @@ impl<M: ChatModel> crate::agent::Agent for AgentLoop<M> {
                     if let Some(us) = user_state {
                         state.user_state = us;
                     }
-                    let action = Action::UserContent(content);
+                    let action = Action::UserContent { content, message_metadata };
                     Box::pin(self.run(state, action, true))
                 }
                 crate::types::LoopInput::Resume { state, results } => {

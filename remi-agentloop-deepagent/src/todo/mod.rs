@@ -72,6 +72,7 @@ where
                 temperature,
                 max_tokens,
                 metadata,
+                user_state,
             } => {
                 extra_tools.extend(self.tool_definitions());
                 LoopInput::Start {
@@ -82,6 +83,7 @@ where
                     temperature,
                     max_tokens,
                     metadata,
+                    user_state,
                 }
             }
             other => other,
