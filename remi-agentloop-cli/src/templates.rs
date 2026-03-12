@@ -15,14 +15,10 @@ fn toml_path(path: &str) -> String {
 pub fn wasip2_cargo_toml(
     agent_name: &str,
     agent_path: &str,
-    remi_agentloop_path: &str,
-    remi_macros_path: &str,
 ) -> String {
     // Using the agent_name with -wasip2 suffix as the crate name
     let crate_name = format!("{agent_name}_wasip2_entry");
     let agent_path = toml_path(agent_path);
-    let remi_agentloop_path = toml_path(remi_agentloop_path);
-    let remi_macros_path = toml_path(remi_macros_path);
     format!(
         r#"[package]
 name = "{crate_name}"
@@ -34,8 +30,8 @@ crate-type = ["cdylib"]
 
 [dependencies]
 {agent_name} = {{ path = "{agent_path}", default-features = false }}
-remi-agentloop = {{ path = "{remi_agentloop_path}", default-features = false }}
-remi-agentloop-macros = {{ path = "{remi_macros_path}" }}
+remi-agentloop = {{ git = "https://github.com/another-s347/remi-agentloop.git", default-features = false }}
+remi-agentloop-macros = {{ git = "https://github.com/another-s347/remi-agentloop.git" }}
 wit-bindgen = "0.53"
 futures = "0.3"
 async-stream = "0.3"
@@ -218,12 +214,9 @@ fn extract_config(input: &LoopInput) -> (String, String, String) {{
 pub fn web_cargo_toml(
     agent_name: &str,
     agent_path: &str,
-    remi_agentloop_path: &str,
-    _remi_macros_path: &str,
 ) -> String {
     let crate_name = format!("{agent_name}-web-entry");
     let agent_path = toml_path(agent_path);
-    let remi_agentloop_path = toml_path(remi_agentloop_path);
     format!(
         r#"[package]
 name = "{crate_name}"
@@ -235,7 +228,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 {agent_name} = {{ path = "{agent_path}", default-features = false }}
-remi-agentloop = {{ path = "{remi_agentloop_path}", default-features = false }}
+remi-agentloop = {{ git = "https://github.com/another-s347/remi-agentloop.git", default-features = false }}
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
 js-sys = "0.3"

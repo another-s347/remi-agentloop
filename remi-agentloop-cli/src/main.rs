@@ -66,10 +66,6 @@ struct BuildArgs {
     #[arg(long, default_value_t = true)]
     release: bool,
 
-    /// Path to the remi-agentloop workspace root (auto-detected if omitted).
-    #[arg(long)]
-    remi_root: Option<PathBuf>,
-
     /// AOT-precompile the wasip2 output for these host triples (comma-separated).
     ///
     /// Requires building with `--features precompile` and that `wasip2` is in
@@ -102,14 +98,6 @@ fn run_build(args: BuildArgs) {
         std::process::exit(1);
     });
 
-    let remi_root = args
-        .remi_root
-        .map(|p| std::fs::canonicalize(p).expect("cannot resolve --remi-root"))
-        .unwrap_or_else(|| detect_remi_root());
-
-    let remi_agentloop_path = remi_root.join("remi-agentloop");
-    let remi_macros_path = remi_root.join("remi-agentloop-macros");
-
     // Read agent crate name from Cargo.toml
     let agent_name = read_crate_name(&agent_path);
     println!("Agent crate: {agent_name} ({agent_path:?})");
@@ -130,8 +118,6 @@ fn run_build(args: BuildArgs) {
                 &agent_path,
                 &agent_name,
                 &args.entry,
-                &remi_agentloop_path,
-                &remi_macros_path,
                 &output,
                 args.release,
             ),
@@ -139,8 +125,6 @@ fn run_build(args: BuildArgs) {
                 &agent_path,
                 &agent_name,
                 &args.entry,
-                &remi_agentloop_path,
-                &remi_macros_path,
                 &output,
                 args.release,
             ),
@@ -233,8 +217,6 @@ fn build_wasip2(
     agent_path: &Path,
     agent_name: &str,
     entry_fn: &str,
-    remi_agentloop_path: &Path,
-    remi_macros_path: &Path,
     output: &Path,
     release: bool,
 ) -> bool {
@@ -257,8 +239,6 @@ fn build_wasip2(
     let cargo_toml = templates::wasip2_cargo_toml(
         agent_name,
         &agent_path.display().to_string(),
-        &remi_agentloop_path.display().to_string(),
-        &remi_macros_path.display().to_string(),
     );
     std::fs::write(crate_dir.join("Cargo.toml"), cargo_toml).unwrap();
 
@@ -329,8 +309,6 @@ fn build_web(
     agent_path: &Path,
     agent_name: &str,
     entry_fn: &str,
-    remi_agentloop_path: &Path,
-    remi_macros_path: &Path,
     output: &Path,
     release: bool,
 ) -> bool {
@@ -353,8 +331,6 @@ fn build_web(
     let cargo_toml = templates::web_cargo_toml(
         agent_name,
         &agent_path.display().to_string(),
-        &remi_agentloop_path.display().to_string(),
-        &remi_macros_path.display().to_string(),
     );
     std::fs::write(crate_dir.join("Cargo.toml"), cargo_toml).unwrap();
 
@@ -405,25 +381,6 @@ fn build_web(
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
-
-fn detect_remi_root() -> PathBuf {
-    // Walk up from CWD looking for Cargo.toml with [workspace] members containing remi-agentloop
-    let mut dir = std::env::current_dir().unwrap();
-    loop {
-        let cargo_toml = dir.join("Cargo.toml");
-        if cargo_toml.exists() {
-            let content = std::fs::read_to_string(&cargo_toml).unwrap_or_default();
-            if content.contains("remi-agentloop") && content.contains("[workspace]") {
-                return dir;
-            }
-        }
-        if !dir.pop() {
-            eprintln!("Error: cannot find remi-agentloop workspace root.");
-            eprintln!("Run from within the workspace, or pass --remi-root <path>");
-            std::process::exit(1);
-        }
-    }
-}
 
 fn read_crate_name(crate_path: &Path) -> String {
     let cargo_toml = crate_path.join("Cargo.toml");
