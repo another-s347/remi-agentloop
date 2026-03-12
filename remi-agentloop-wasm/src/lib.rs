@@ -307,6 +307,7 @@ fn rust_loop_input_to_wit(input: LoopInput) -> wit::LoopInput {
             max_tokens,
             metadata,
             user_state,
+            message_metadata,
         } => wit::LoopInput::Start(wit::LoopInputStart {
             content: rust_content_to_wit(content),
             history: history.into_iter().map(rust_msg_to_wit).collect(),
@@ -316,6 +317,7 @@ fn rust_loop_input_to_wit(input: LoopInput) -> wit::LoopInput {
             max_tokens,
             metadata_json: metadata.map(|v| serde_json::to_string(&v).unwrap_or_default()),
             user_state_json: user_state.map(|v| serde_json::to_string(&v).unwrap_or_default()),
+            message_metadata_json: message_metadata.map(|v| serde_json::to_string(&v).unwrap_or_default()),
         }),
         LoopInput::Resume { state, results } => wit::LoopInput::Resume(wit::LoopInputResume {
             state: rust_state_to_wit(state),

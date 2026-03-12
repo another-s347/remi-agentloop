@@ -197,6 +197,8 @@ interface agent {
         metadata-json: option<string>,
         /// JSON-encoded initial user_state to inject (tool-managed per-thread state).
         user-state-json: option<string>,
+        /// JSON-encoded metadata to attach to the user message created from `content`.
+        message-metadata-json: option<string>,
     }
 
     record loop-input-resume {
