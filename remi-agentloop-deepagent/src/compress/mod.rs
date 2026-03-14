@@ -182,6 +182,7 @@ where
                 max_tokens,
                 metadata,
                 message_metadata,
+                user_name,
                 user_state,
             } => {
                 let history = self.maybe_compress(history).await?;
@@ -194,6 +195,7 @@ where
                     max_tokens,
                     metadata,
                     message_metadata,
+                    user_name,
                     user_state,
                 }
             }

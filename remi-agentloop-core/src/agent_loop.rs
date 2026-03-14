@@ -591,6 +591,7 @@ impl<M: ChatModel> crate::agent::Agent for AgentLoop<M> {
                     max_tokens,
                     metadata,
                     message_metadata,
+                    user_name,
                     user_state,
                 } => {
                     let mut state = self.build_state(history);
@@ -613,7 +614,11 @@ impl<M: ChatModel> crate::agent::Agent for AgentLoop<M> {
                     if let Some(us) = user_state {
                         state.user_state = us;
                     }
-                    let action = Action::UserContent { content, message_metadata };
+                    let action = Action::UserContent {
+                        content,
+                        message_metadata,
+                        user_name,
+                    };
                     Box::pin(self.run(state, action, true))
                 }
                 crate::types::LoopInput::Resume { state, results } => {

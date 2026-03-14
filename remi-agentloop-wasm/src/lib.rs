@@ -306,9 +306,9 @@ fn rust_loop_input_to_wit(input: LoopInput) -> wit::LoopInput {
             temperature,
             max_tokens,
             metadata,
-            message_metadata: _,
-            user_state,
             message_metadata,
+            user_name: _,
+            user_state,
         } => wit::LoopInput::Start(wit::LoopInputStart {
             content: rust_content_to_wit(content),
             history: history.into_iter().map(rust_msg_to_wit).collect(),

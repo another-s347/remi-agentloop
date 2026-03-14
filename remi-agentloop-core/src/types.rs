@@ -705,6 +705,12 @@ pub enum LoopInput {
         /// Stored alongside the message in conversation history.
         #[serde(skip_serializing_if = "Option::is_none")]
         message_metadata: Option<Value>,
+        /// Optional user identifier attached to the user message as the `name` field.
+        ///
+        /// Useful in multi-user scenarios — the LLM sees `role: "user"` plus
+        /// `name: "<user_id>"` as separate fields in the request body.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        user_name: Option<String>,
         /// Initial user_state to inject (tool-managed per-thread state, e.g. todos)
         #[serde(skip_serializing_if = "Option::is_none")]
         user_state: Option<serde_json::Value>,
@@ -743,6 +749,7 @@ impl LoopInput {
             max_tokens: None,
             metadata: None,
             message_metadata: None,
+            user_name: None,
             user_state: None,
         }
     }
@@ -758,6 +765,7 @@ impl LoopInput {
             max_tokens: None,
             metadata: None,
             message_metadata: None,
+            user_name: None,
             user_state: None,
         }
     }
@@ -827,6 +835,16 @@ impl LoopInput {
         } = &mut self
         {
             *message_metadata = Some(v);
+        }
+        self
+    }
+
+    /// Builder: set the user identifier on the user message (only applies to `Start`).
+    ///
+    /// Serialised as the `name` field in OpenAI-compatible request bodies.
+    pub fn user_name(mut self, name: impl Into<String>) -> Self {
+        if let Self::Start { user_name, .. } = &mut self {
+            *user_name = Some(name.into());
         }
         self
     }
