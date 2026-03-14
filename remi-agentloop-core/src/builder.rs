@@ -615,11 +615,20 @@ impl<M: ChatModel, S: ContextStore, C: CheckpointStore> BuiltAgent<M, S, C> {
         }
 
         match input {
-            ChatInput::Message(user_input) => {
+            ChatInput::Message { content: user_content, user_name } => {
                 let run_id = self.store.create_run(thread_id).await?;
 
                 // Append user message to store + state
-                let user_msg = Message::user(&user_input);
+                let user_msg = Message {
+                    id: crate::types::MessageId::new(),
+                    role: Role::User,
+                    content: user_content,
+                    tool_calls: None,
+                    tool_call_id: None,
+                    name: user_name,
+                    reasoning_content: None,
+                    metadata: None,
+                };
                 self.store
                     .append_message(thread_id, user_msg.clone())
                     .await?;

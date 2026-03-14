@@ -357,6 +357,14 @@ impl Message {
         self
     }
 
+    /// Set the user identifier from an `Option` — no-op if `None`.
+    pub fn with_name_opt(mut self, name: Option<String>) -> Self {
+        if let Some(n) = name {
+            self.name = Some(n);
+        }
+        self
+    }
+
     /// Attach user-defined metadata to this message.
     pub fn with_metadata(mut self, metadata: impl Into<Value>) -> Self {
         self.metadata = Some(metadata.into());
@@ -894,8 +902,12 @@ impl From<Content> for LoopInput {
 /// ```
 #[derive(Debug, Clone)]
 pub enum ChatInput {
-    /// A new user message
-    Message(String),
+    /// A new user message (text or multimodal)
+    Message {
+        content: Content,
+        /// Optional user identifier — serialised as the `name` field in the request body.
+        user_name: Option<String>,
+    },
     /// Resume a previously interrupted run
     Resume {
         run_id: RunId,
@@ -958,14 +970,37 @@ pub enum ChatInput {
     },
 }
 
+impl ChatInput {
+    /// Create a plain text message input.
+    pub fn text(msg: impl Into<String>) -> Self {
+        ChatInput::Message { content: Content::text(msg), user_name: None }
+    }
+
+    /// Create a multimodal message input (text + images, audio, etc.).
+    pub fn multimodal(parts: Vec<ContentPart>) -> Self {
+        ChatInput::Message { content: Content::parts(parts), user_name: None }
+    }
+
+    /// Attach a user identifier to a `Message` input.
+    pub fn with_user_name(self, name: impl Into<String>) -> Self {
+        match self {
+            ChatInput::Message { content, .. } => ChatInput::Message {
+                content,
+                user_name: Some(name.into()),
+            },
+            other => other,
+        }
+    }
+}
+
 impl From<String> for ChatInput {
     fn from(s: String) -> Self {
-        ChatInput::Message(s)
+        ChatInput::Message { content: Content::text(s), user_name: None }
     }
 }
 
 impl From<&str> for ChatInput {
     fn from(s: &str) -> Self {
-        ChatInput::Message(s.to_string())
+        ChatInput::Message { content: Content::text(s), user_name: None }
     }
 }
