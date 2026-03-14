@@ -261,10 +261,7 @@ impl<M, S, C> AgentBuilder<M, S, C> {
     ///     )
     ///     .build();
     /// ```
-    pub fn extra_options(
-        mut self,
-        options: serde_json::Map<String, serde_json::Value>,
-    ) -> Self {
+    pub fn extra_options(mut self, options: serde_json::Map<String, serde_json::Value>) -> Self {
         self.config.extra = serde_json::Value::Object(options);
         self
     }
@@ -615,17 +612,32 @@ impl<M: ChatModel, S: ContextStore, C: CheckpointStore> BuiltAgent<M, S, C> {
         }
 
         match input {
-            ChatInput::Message { content: user_content, user_name } => {
+            ChatInput::Message {
+                content: user_content,
+                user_name,
+            } => {
                 let run_id = self.store.create_run(thread_id).await?;
 
                 // Append user message to store + state
+                let user_content = match user_name {
+                    Some(ref name) => match user_content {
+                        crate::types::Content::Text(s) => {
+                            crate::types::Content::Text(format!("[{name}]: {s}"))
+                        }
+                        crate::types::Content::Parts(mut parts) => {
+                            parts.insert(0, crate::types::ContentPart::text(format!("[{name}]: ")));
+                            crate::types::Content::Parts(parts)
+                        }
+                    },
+                    None => user_content,
+                };
                 let user_msg = Message {
                     id: crate::types::MessageId::new(),
                     role: Role::User,
                     content: user_content,
                     tool_calls: None,
                     tool_call_id: None,
-                    name: user_name,
+                    name: None,
                     reasoning_content: None,
                     metadata: None,
                 };

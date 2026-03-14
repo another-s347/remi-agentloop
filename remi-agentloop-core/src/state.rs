@@ -351,13 +351,23 @@ pub fn step<M: ChatModel>(
                         state.messages.insert(0, Message::system(sys));
                     }
                 }
+                let content = match user_name {
+                    Some(ref name) => match content {
+                        crate::types::Content::Text(s) => crate::types::Content::Text(format!("[{name}]: {s}")),
+                        crate::types::Content::Parts(mut parts) => {
+                            parts.insert(0, crate::types::ContentPart::text(format!("[{name}]: ")));
+                            crate::types::Content::Parts(parts)
+                        }
+                    },
+                    None => content,
+                };
                 state.messages.push(Message {
                     id: crate::types::MessageId::new(),
                     role: crate::types::Role::User,
                     content,
                     tool_calls: None,
                     tool_call_id: None,
-                    name: user_name,
+                    name: None,
                     reasoning_content: None,
                     metadata: message_metadata,
                 });
