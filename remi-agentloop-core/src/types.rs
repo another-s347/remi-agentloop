@@ -262,6 +262,12 @@ pub struct Message {
     pub tool_calls: Option<Vec<ToolCallMessage>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
+    /// Optional user identifier for `Role::User` messages.
+    ///
+    /// Maps to the `name` field in OpenAI-compatible request bodies.
+    /// Useful for multi-user scenarios or end-user abuse monitoring.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
     /// Chain-of-thought / reasoning text returned by thinking models (e.g. Kimi K2.5).
     /// Must be echoed back verbatim when replaying the conversation history.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -279,6 +285,24 @@ impl Message {
             content: Content::text(text),
             tool_calls: None,
             tool_call_id: None,
+            name: None,
+            reasoning_content: None,
+            metadata: None,
+        }
+    }
+
+    /// Create a user message with an explicit user identifier.
+    ///
+    /// The `user_id` is serialised as the `name` field in OpenAI-compatible
+    /// request bodies, useful for multi-user conversations.
+    pub fn user_with_id(text: impl Into<String>, user_id: impl Into<String>) -> Self {
+        Self {
+            id: MessageId::new(),
+            role: Role::User,
+            content: Content::text(text),
+            tool_calls: None,
+            tool_call_id: None,
+            name: Some(user_id.into()),
             reasoning_content: None,
             metadata: None,
         }
@@ -291,6 +315,7 @@ impl Message {
             content: Content::text(text),
             tool_calls: None,
             tool_call_id: None,
+            name: None,
             reasoning_content: None,
             metadata: None,
         }
@@ -303,6 +328,7 @@ impl Message {
             content: Content::text(text),
             tool_calls: None,
             tool_call_id: None,
+            name: None,
             reasoning_content: None,
             metadata: None,
         }
@@ -319,9 +345,16 @@ impl Message {
             content: Content::text(text),
             tool_calls: Some(tool_calls),
             tool_call_id: None,
+            name: None,
             reasoning_content,
             metadata: None,
         }
+    }
+
+    /// Set the user identifier on this message (maps to the `name` field).
+    pub fn with_name(mut self, name: impl Into<String>) -> Self {
+        self.name = Some(name.into());
+        self
     }
 
     /// Attach user-defined metadata to this message.
@@ -337,6 +370,7 @@ impl Message {
             content: Content::text(result),
             tool_calls: None,
             tool_call_id: Some(tool_call_id.into()),
+            name: None,
             reasoning_content: None,
             metadata: None,
         }
@@ -350,6 +384,7 @@ impl Message {
             content,
             tool_calls: None,
             tool_call_id: Some(tool_call_id.into()),
+            name: None,
             reasoning_content: None,
             metadata: None,
         }
@@ -362,6 +397,7 @@ impl Message {
             content: Content::parts(parts),
             tool_calls: None,
             tool_call_id: None,
+            name: None,
             reasoning_content: None,
             metadata: None,
         }
@@ -406,6 +442,14 @@ pub struct ChatRequest {
     pub stream_options: Option<StreamOptions>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata: Option<serde_json::Value>,
+    /// Provider-specific extra parameters merged into the top-level request body.
+    ///
+    /// Keys are flattened directly into the JSON object, enabling any
+    /// OpenAI-compatible parameter not otherwise modelled here (e.g.
+    /// `top_p`, `presence_penalty`, vendor extensions).
+    /// Populated from [`AgentBuilder::extra_options`].
+    #[serde(flatten)]
+    pub extra_body: serde_json::Map<String, serde_json::Value>,
 }
 
 #[derive(Debug, Clone)]
@@ -778,7 +822,10 @@ impl LoopInput {
 
     /// Builder: set metadata on the user message created from `content` (only applies to `Start`).
     pub fn message_metadata(mut self, v: serde_json::Value) -> Self {
-        if let Self::Start { message_metadata, .. } = &mut self {
+        if let Self::Start {
+            message_metadata, ..
+        } = &mut self
+        {
             *message_metadata = Some(v);
         }
         self

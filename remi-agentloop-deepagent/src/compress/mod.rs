@@ -135,6 +135,7 @@ where
             stream: true,
             stream_options: None,
             metadata: None,
+            extra_body: serde_json::Map::new(),
         };
 
         let stream = self.model.chat(req).await?;
@@ -180,6 +181,7 @@ where
                 temperature,
                 max_tokens,
                 metadata,
+                message_metadata,
                 user_state,
             } => {
                 let history = self.maybe_compress(history).await?;
@@ -191,6 +193,7 @@ where
                     temperature,
                     max_tokens,
                     metadata,
+                    message_metadata,
                     user_state,
                 }
             }

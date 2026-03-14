@@ -180,6 +180,10 @@ pub struct StepConfig {
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata: Option<serde_json::Value>,
+
+    /// Provider-specific extra fields forwarded verbatim to the model request body.
+    #[serde(default, skip_serializing_if = "serde_json::Map::is_empty")]
+    pub extra_body: serde_json::Map<String, serde_json::Value>,
 }
 
 impl StepConfig {
@@ -189,6 +193,7 @@ impl StepConfig {
             temperature: None,
             max_tokens: None,
             metadata: None,
+            extra_body: serde_json::Map::new(),
         }
     }
 }
@@ -350,6 +355,7 @@ pub fn step<M: ChatModel>(
                     content,
                     tool_calls: None,
                     tool_call_id: None,
+                    name: None,
                     reasoning_content: None,
                     metadata: message_metadata,
                 });
@@ -384,6 +390,7 @@ pub fn step<M: ChatModel>(
             stream: true,
             stream_options: Some(StreamOptions { include_usage: true }),
             metadata: state.config.metadata.clone(),
+            extra_body: state.config.extra_body.clone(),
         };
 
         // ── 3. Call model ────────────────────────────────────────────

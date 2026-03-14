@@ -63,11 +63,16 @@ impl<M: ChatModel> AgentLoop<M> {
     /// before calling [`run()`](Self::run).
     pub fn build_state(&self, messages: Vec<Message>) -> AgentState {
         let model_name = self.config.model.clone().unwrap_or_default();
+        let extra_body = match &self.config.extra {
+            serde_json::Value::Object(map) => map.clone(),
+            _ => serde_json::Map::new(),
+        };
         let mut state = AgentState::new(StepConfig {
             model: model_name,
             temperature: self.config.temperature,
             max_tokens: self.config.max_tokens,
             metadata: None,
+            extra_body,
         });
         state.system_prompt = if self.system_prompt.is_empty() {
             None
@@ -132,6 +137,7 @@ impl<M: ChatModel> AgentLoop<M> {
                                 content: content.clone(),
                                 tool_calls: None,
                                 tool_call_id: None,
+                                name: None,
                                 reasoning_content: None,
                                 metadata: None,
                             });

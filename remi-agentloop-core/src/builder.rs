@@ -243,6 +243,31 @@ impl<M, S, C> AgentBuilder<M, S, C> {
         self.tracer = Some(Box::new(tracer));
         self
     }
+
+    /// Set provider-specific extra parameters included in every chat request body.
+    ///
+    /// The entries are flattened into the top-level JSON object sent to the model,
+    /// enabling any OpenAI-compatible field not directly modelled by [`ChatRequest`]
+    /// (e.g. `top_p`, `presence_penalty`, provider extensions).
+    ///
+    /// ```ignore
+    /// use serde_json::json;
+    ///
+    /// let agent = AgentBuilder::new()
+    ///     .model(oai)
+    ///     .extra_options(
+    ///         json!({ "top_p": 0.9, "presence_penalty": 0.1 })
+    ///             .as_object().unwrap().clone()
+    ///     )
+    ///     .build();
+    /// ```
+    pub fn extra_options(
+        mut self,
+        options: serde_json::Map<String, serde_json::Value>,
+    ) -> Self {
+        self.config.extra = serde_json::Value::Object(options);
+        self
+    }
 }
 
 impl<M: ChatModel, S, C> AgentBuilder<M, S, C> {
@@ -424,6 +449,7 @@ impl<M: ChatModel, S: ContextStore, C: CheckpointStore> BuiltAgent<M, S, C> {
                     content: Content::text(text),
                     tool_calls: None,
                     tool_call_id: None,
+                    name: None,
                     reasoning_content: None,
                     metadata: None,
                 });

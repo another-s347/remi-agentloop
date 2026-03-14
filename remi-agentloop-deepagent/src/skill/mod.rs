@@ -81,6 +81,7 @@ where
                 temperature,
                 max_tokens,
                 metadata,
+                message_metadata,
                 user_state,
             } => {
                 extra_tools.extend(self.tool_definitions());
@@ -92,6 +93,7 @@ where
                     temperature,
                     max_tokens,
                     metadata,
+                    message_metadata,
                     user_state,
                 }
             }

@@ -306,6 +306,7 @@ fn rust_loop_input_to_wit(input: LoopInput) -> wit::LoopInput {
             temperature,
             max_tokens,
             metadata,
+            message_metadata: _,
             user_state,
             message_metadata,
         } => wit::LoopInput::Start(wit::LoopInputStart {
@@ -419,6 +420,7 @@ fn wit_msg_to_rust(m: wit::Message) -> remi_agentloop::types::Message {
                 .collect()
         }),
         tool_call_id: m.tool_call_id,
+        name: None,
         reasoning_content: m.reasoning_content,
         metadata: m.metadata_json.and_then(|j| serde_json::from_str(&j).ok()),
     }
@@ -442,6 +444,7 @@ fn wit_step_cfg_to_rust(c: wit::StepConfig) -> remi_agentloop::state::StepConfig
         temperature: c.temperature,
         max_tokens: c.max_tokens,
         metadata: c.metadata_json.and_then(|j| serde_json::from_str(&j).ok()),
+        extra_body: serde_json::Map::new(),
     }
 }
 
