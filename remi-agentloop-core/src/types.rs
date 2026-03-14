@@ -293,19 +293,16 @@ impl Message {
 
     /// Create a user message with an explicit user identifier.
     ///
-    /// The `user_id` is prepended to the message content as `[user_id]: <text>`,
-    /// making the identity visible to the model without relying on the `name`
-    /// field which is not supported by all providers.
+    /// The `user_id` is serialised as the `name` field in OpenAI-compatible
+    /// request bodies, useful for multi-user conversations.
     pub fn user_with_id(text: impl Into<String>, user_id: impl Into<String>) -> Self {
-        let user_id = user_id.into();
-        let text = text.into();
         Self {
             id: MessageId::new(),
             role: Role::User,
-            content: Content::text(format!("[{user_id}]: {text}")),
+            content: Content::text(text),
             tool_calls: None,
             tool_call_id: None,
-            name: None,
+            name: Some(user_id.into()),
             reasoning_content: None,
             metadata: None,
         }
@@ -354,26 +351,16 @@ impl Message {
         }
     }
 
-    /// Prepend a user identifier to this message's content as `[name]: <original>`.
-    ///
-    /// Prefer this over relying on the `name` field, which is not supported by
-    /// all OpenAI-compatible providers.
+    /// Set the user identifier on this message (maps to the `name` field).
     pub fn with_name(mut self, name: impl Into<String>) -> Self {
-        let name = name.into();
-        self.content = match self.content {
-            Content::Text(s) => Content::Text(format!("[{name}]: {s}")),
-            Content::Parts(mut parts) => {
-                parts.insert(0, ContentPart::text(format!("[{name}]: ")));
-                Content::Parts(parts)
-            }
-        };
+        self.name = Some(name.into());
         self
     }
 
-    /// Prepend a user identifier to this message's content — no-op if `None`.
+    /// Set the user identifier from an `Option` — no-op if `None`.
     pub fn with_name_opt(mut self, name: Option<String>) -> Self {
         if let Some(n) = name {
-            self = self.with_name(n);
+            self.name = Some(n);
         }
         self
     }
@@ -986,18 +973,12 @@ pub enum ChatInput {
 impl ChatInput {
     /// Create a plain text message input.
     pub fn text(msg: impl Into<String>) -> Self {
-        ChatInput::Message {
-            content: Content::text(msg),
-            user_name: None,
-        }
+        ChatInput::Message { content: Content::text(msg), user_name: None }
     }
 
     /// Create a multimodal message input (text + images, audio, etc.).
     pub fn multimodal(parts: Vec<ContentPart>) -> Self {
-        ChatInput::Message {
-            content: Content::parts(parts),
-            user_name: None,
-        }
+        ChatInput::Message { content: Content::parts(parts), user_name: None }
     }
 
     /// Attach a user identifier to a `Message` input.
@@ -1014,18 +995,12 @@ impl ChatInput {
 
 impl From<String> for ChatInput {
     fn from(s: String) -> Self {
-        ChatInput::Message {
-            content: Content::text(s),
-            user_name: None,
-        }
+        ChatInput::Message { content: Content::text(s), user_name: None }
     }
 }
 
 impl From<&str> for ChatInput {
     fn from(s: &str) -> Self {
-        ChatInput::Message {
-            content: Content::text(s),
-            user_name: None,
-        }
+        ChatInput::Message { content: Content::text(s), user_name: None }
     }
 }
