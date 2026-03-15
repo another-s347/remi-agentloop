@@ -32,7 +32,7 @@ use crate::error::AgentError;
 use crate::model::ChatModel;
 use crate::state::{step, Action, AgentState, StepConfig, StepEvent};
 use crate::tool::registry::ToolRegistry;
-use crate::tool::{ToolOutput, ToolResult};
+use crate::tool::{ToolDefinitionContext, ToolOutput, ToolResult};
 use crate::tracing::{
     DynTracer, InterruptTrace, ModelEndTrace, ModelStartTrace, ResumeTrace, RunEndTrace,
     RunStartTrace, RunStatus, ToolCallTrace, ToolEndTrace, ToolStartTrace, TurnStartTrace,
@@ -55,6 +55,28 @@ pub struct AgentLoop<M: ChatModel> {
 }
 
 impl<M: ChatModel> AgentLoop<M> {
+    fn tool_definition_context(state: &AgentState) -> ToolDefinitionContext {
+        ToolDefinitionContext {
+            thread_id: Some(state.thread_id.clone()),
+            run_id: Some(state.run_id.clone()),
+            metadata: state.config.metadata.clone(),
+            user_state: state.user_state.clone(),
+        }
+    }
+
+    fn refresh_local_tool_definitions(state: &mut AgentState, tools: &dyn ToolRegistry) {
+        let ctx = Self::tool_definition_context(state);
+        let local_defs = tools.definitions_with_context(&ctx);
+        let external_defs: Vec<_> = state
+            .tool_definitions
+            .iter()
+            .filter(|d| !tools.contains(&d.function.name))
+            .cloned()
+            .collect();
+        state.tool_definitions = local_defs;
+        state.tool_definitions.extend(external_defs);
+    }
+
     /// Build the initial [`AgentState`] for a new run.
     ///
     /// The returned state has `tool_definitions` populated from the
@@ -79,7 +101,9 @@ impl<M: ChatModel> AgentLoop<M> {
         } else {
             Some(self.system_prompt.clone())
         };
-        state.tool_definitions = self.tools.definitions(&state.user_state);
+        state.tool_definitions = self
+            .tools
+            .definitions_with_context(&Self::tool_definition_context(&state));
         state.messages = messages;
         state
     }
@@ -179,6 +203,8 @@ impl<M: ChatModel> AgentLoop<M> {
                     yield AgentEvent::Error(AgentError::MaxTurnsExceeded { max: max_turns });
                     return;
                 }
+
+                Self::refresh_local_tool_definitions(&mut state, tools);
 
                 // ── Model start trace ─────────────────────────────────
                 let tool_names: Vec<String> = state.tool_definitions.iter()
@@ -531,13 +557,7 @@ impl<M: ChatModel> AgentLoop<M> {
                         // externally-injected definitions (those not in
                         // this registry).  This allows outer layers to
                         // inject additional tool defs that survive across turns.
-                        let local_defs = tools.definitions(&state.user_state);
-                        let external_defs: Vec<_> = state.tool_definitions.iter()
-                            .filter(|d| !tools.contains(&d.function.name))
-                            .cloned()
-                            .collect();
-                        state.tool_definitions = local_defs;
-                        state.tool_definitions.extend(external_defs);
+                        Self::refresh_local_tool_definitions(&mut state, tools);
 
                         // ── Checkpoint: ToolsExecuted ─────────────────
                         let next_action = Action::ToolResults(outcomes);

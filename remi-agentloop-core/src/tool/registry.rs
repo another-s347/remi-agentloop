@@ -1,4 +1,7 @@
-use super::{tool_to_definition, BoxedToolResult, DynTool, Tool, ToolContext, ToolDefinition};
+use super::{
+    tool_to_definition, BoxedToolResult, DynTool, Tool, ToolContext, ToolDefinition,
+    ToolDefinitionContext,
+};
 use crate::error::AgentError;
 use crate::types::{ParsedToolCall, ResumePayload};
 use std::collections::HashMap;
@@ -20,6 +23,15 @@ pub trait ToolRegistry: Send + Sync {
     /// `user_state` is the current `AgentState.user_state`; implementations
     /// should use [`Tool::enabled`] to filter tools for progressive disclosure.
     fn definitions(&self, user_state: &serde_json::Value) -> Vec<ToolDefinition>;
+
+    /// Returns tool definitions using the full runtime definition context.
+    ///
+    /// Implementations that don't need request metadata or run identifiers can
+    /// rely on the default behaviour, which falls back to [`definitions`] and
+    /// preserves the pre-existing user-state-only contract.
+    fn definitions_with_context(&self, ctx: &ToolDefinitionContext) -> Vec<ToolDefinition> {
+        self.definitions(&ctx.user_state)
+    }
 
     /// Returns `true` when no tools are registered.
     fn is_empty(&self) -> bool;
@@ -76,10 +88,15 @@ impl DefaultToolRegistry {
 
 impl ToolRegistry for DefaultToolRegistry {
     fn definitions(&self, user_state: &serde_json::Value) -> Vec<ToolDefinition> {
+        let ctx = ToolDefinitionContext::from_user_state(user_state.clone());
+        self.definitions_with_context(&ctx)
+    }
+
+    fn definitions_with_context(&self, ctx: &ToolDefinitionContext) -> Vec<ToolDefinition> {
         self.tools
             .iter()
-            .filter(|t| t.enabled(user_state))
-            .map(|t| tool_to_definition(t.as_ref()))
+            .filter(|t| t.enabled(&ctx.user_state))
+            .map(|t| tool_to_definition(t.as_ref(), ctx))
             .collect()
     }
 

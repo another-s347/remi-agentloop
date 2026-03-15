@@ -34,7 +34,7 @@ use remi_core::error::AgentError;
 use remi_core::model::ChatModel;
 use remi_core::state::AgentState;
 use remi_core::tool::registry::{DefaultToolRegistry, ToolRegistry};
-use remi_core::tool::{Tool, ToolContext, ToolDefinition, ToolOutput};
+use remi_core::tool::{Tool, ToolContext, ToolDefinition, ToolDefinitionContext, ToolOutput};
 use remi_core::types::{AgentEvent, LoopInput, Message, ParsedToolCall, ToolCallOutcome};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -43,7 +43,7 @@ use std::sync::Arc;
 use crate::events::{DeepAgentEvent, SkillEvent, TodoEvent};
 use crate::registry::FileBackedRegistry;
 use crate::search::ExaSearchTool;
-use crate::skill::store::{FileSkillStore, SkillStore};
+use crate::skill::store::FileSkillStore;
 use crate::skill::tools::{SkillDeleteTool, SkillGetTool, SkillListTool, SkillSaveTool};
 use crate::task::SubAgentTaskTool;
 use crate::todo::tools::{
@@ -60,6 +60,26 @@ pub struct DeepAgent<M: ChatModel + Clone + Send + Sync + 'static> {
 }
 
 impl<M: ChatModel + Clone + Send + Sync + 'static> DeepAgent<M> {
+    fn local_tool_definition_context(input: &LoopInput) -> ToolDefinitionContext {
+        match input {
+            LoopInput::Start {
+                metadata,
+                user_state,
+                ..
+            } => ToolDefinitionContext {
+                metadata: metadata.clone(),
+                user_state: user_state.clone().unwrap_or(serde_json::Value::Null),
+                ..ToolDefinitionContext::default()
+            },
+            LoopInput::Resume { state, .. } | LoopInput::Cancel { state } => ToolDefinitionContext {
+                thread_id: Some(state.thread_id.clone()),
+                run_id: Some(state.run_id.clone()),
+                metadata: state.config.metadata.clone(),
+                user_state: state.user_state.clone(),
+            },
+        }
+    }
+
     /// Send a message and receive a stream of `DeepAgentEvent`.
     pub async fn chat(
         &self,
@@ -92,8 +112,10 @@ impl<M: ChatModel + Clone + Send + Sync + 'static> DeepAgent<M> {
     // ── Internal drive loop ───────────────────────────────────────────────────
 
     fn drive<'a>(&'a self, input: LoopInput) -> impl Stream<Item = DeepAgentEvent> + 'a {
-        // Cache local tool definitions once
-        let extra_defs = self.local_tools.definitions(&serde_json::Value::Null);
+        // Cache local tool definitions for this input.
+        let extra_defs = self
+            .local_tools
+            .definitions_with_context(&Self::local_tool_definition_context(&input));
 
         stream! {
             let mut current = inject_extra_tools(input, extra_defs);

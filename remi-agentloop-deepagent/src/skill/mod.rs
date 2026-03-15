@@ -10,7 +10,7 @@ use remi_core::agent::Agent;
 use remi_core::error::AgentError;
 use remi_core::tool::{
     registry::{DefaultToolRegistry, ToolRegistry},
-    ToolContext, ToolDefinition, ToolOutput,
+    ToolContext, ToolDefinition, ToolDefinitionContext, ToolOutput,
 };
 use remi_core::types::{AgentEvent, Content, LoopInput, ParsedToolCall, ToolCallOutcome};
 use std::collections::HashMap;
@@ -51,8 +51,17 @@ impl<A, S: SkillStore> SkillAgent<A, S> {
         }
     }
 
-    fn tool_definitions(&self) -> Vec<ToolDefinition> {
-        self.tools.definitions(&serde_json::Value::Null)
+    fn tool_definitions(
+        &self,
+        metadata: Option<serde_json::Value>,
+        user_state: Option<serde_json::Value>,
+    ) -> Vec<ToolDefinition> {
+        let ctx = ToolDefinitionContext {
+            metadata,
+            user_state: user_state.unwrap_or(serde_json::Value::Null),
+            ..ToolDefinitionContext::default()
+        };
+        self.tools.definitions_with_context(&ctx)
     }
 }
 
@@ -85,7 +94,7 @@ where
                 user_name,
                 user_state,
             } => {
-                extra_tools.extend(self.tool_definitions());
+                extra_tools.extend(self.tool_definitions(metadata.clone(), user_state.clone()));
                 LoopInput::Start {
                     content,
                     history,

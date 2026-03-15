@@ -44,6 +44,8 @@ async fn web_search(
 }
 ```
 
+> 当前 `#[tool]` 宏仍然只生成静态 `description()`。如果某个 tool 需要根据运行时 `metadata` / `user_state` 动态生成发送给模型的 `extra_prompt`，请改为手写 `Tool` impl 并覆写 `extra_prompt(&ToolDefinitionContext)`。
+
 宏展开后等价于：
 
 ```rust

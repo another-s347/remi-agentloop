@@ -159,6 +159,7 @@ interface agent {
         name: string,
         description: string,
         parameters-schema-json: string,
+        extra-prompt: option<string>,
     }
     record parsed-tool-call {
         id: string,
@@ -261,6 +262,16 @@ world agent-world {
     export agent-info;
 }
 ";
+
+#[cfg(test)]
+mod tests {
+    use super::WIT_INLINE;
+
+    #[test]
+    fn inline_wit_exposes_tool_extra_prompt() {
+        assert!(WIT_INLINE.contains("extra-prompt: option<string>"));
+    }
+}
 
 // ── generate! macro ──────────────────────────────────────────────────────────
 
@@ -451,6 +462,7 @@ macro_rules! export_agent {
                         description: td.description,
                         parameters: $crate::_serde_json::from_str(&td.parameters_schema_json)
                             .unwrap_or($crate::_serde_json::Value::Null),
+                        extra_prompt: td.extra_prompt,
                     },
                 }
             }
@@ -461,6 +473,7 @@ macro_rules! export_agent {
                     description: td.function.description,
                     parameters_schema_json: $crate::_serde_json::to_string(&td.function.parameters)
                         .unwrap_or_default(),
+                    extra_prompt: td.function.extra_prompt,
                 }
             }
 

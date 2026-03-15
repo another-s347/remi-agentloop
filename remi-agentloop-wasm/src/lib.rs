@@ -239,6 +239,7 @@ fn rust_tool_def_to_wit(td: remi_agentloop::tool::ToolDefinition) -> wit::ToolDe
         name: td.function.name,
         description: td.function.description,
         parameters_schema_json: serde_json::to_string(&td.function.parameters).unwrap_or_default(),
+        extra_prompt: td.function.extra_prompt,
     }
 }
 
@@ -434,6 +435,7 @@ fn wit_tool_def_to_rust(td: wit::ToolDefinition) -> remi_agentloop::tool::ToolDe
             description: td.description,
             parameters: serde_json::from_str(&td.parameters_schema_json)
                 .unwrap_or(serde_json::Value::Null),
+            extra_prompt: td.extra_prompt,
         },
     }
 }
@@ -535,6 +537,37 @@ fn wit_event_to_rust(event: wit::ProtocolEvent) -> ProtocolEvent {
                 .map(wit_outcome_to_rust)
                 .collect(),
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{rust_tool_def_to_wit, wit_tool_def_to_rust};
+
+    #[test]
+    fn tool_definition_round_trip_preserves_extra_prompt() {
+        let tool_definition = remi_agentloop::tool::ToolDefinition {
+            tool_type: "function".into(),
+            function: remi_agentloop::tool::FunctionDefinition {
+                name: "round_trip_tool".into(),
+                description: "Round-trip test tool".into(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {},
+                    "required": []
+                }),
+                extra_prompt: Some("runtime note".into()),
+            },
+        };
+
+        let wit_definition = rust_tool_def_to_wit(tool_definition.clone());
+        assert_eq!(wit_definition.extra_prompt.as_deref(), Some("runtime note"));
+
+        let round_tripped = wit_tool_def_to_rust(wit_definition);
+        assert_eq!(
+            round_tripped.function.extra_prompt.as_deref(),
+            Some("runtime note")
+        );
     }
 }
 

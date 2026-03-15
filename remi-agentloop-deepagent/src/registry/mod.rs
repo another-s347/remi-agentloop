@@ -15,13 +15,14 @@
 use futures::StreamExt;
 use remi_core::error::AgentError;
 use remi_core::tool::registry::ToolRegistry;
-use remi_core::tool::{BoxedToolResult, Tool, ToolContext, ToolDefinition, ToolOutput};
+use remi_core::tool::{
+    BoxedToolResult, ToolContext, ToolDefinition, ToolDefinitionContext, ToolOutput,
+};
 use remi_core::types::{ParsedToolCall, ResumePayload};
 use std::collections::HashMap;
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
-use uuid::Uuid;
 
 // ── FileBackedRegistry ────────────────────────────────────────────────────────
 
@@ -65,6 +66,10 @@ impl<R: ToolRegistry> FileBackedRegistry<R> {
 impl<R: ToolRegistry> ToolRegistry for FileBackedRegistry<R> {
     fn definitions(&self, user_state: &serde_json::Value) -> Vec<ToolDefinition> {
         self.inner.definitions(user_state)
+    }
+
+    fn definitions_with_context(&self, ctx: &ToolDefinitionContext) -> Vec<ToolDefinition> {
+        self.inner.definitions_with_context(ctx)
     }
 
     fn is_empty(&self) -> bool {

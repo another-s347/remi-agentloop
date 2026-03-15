@@ -212,23 +212,38 @@ pub struct FunctionDefinition {
     pub name: String,
     pub description: String,
     pub parameters: serde_json::Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub extra_prompt: Option<String>,
 }
 ```
+
+`description` 用于稳定、长期存在的工具说明；`extra_prompt` 用于**运行时动态追加**的补充提示。它是可选的，绝大多数 tool 保持 `None` 即可。典型用法是根据当前 `metadata` 或 `user_state` 给模型补充当轮专用约束，例如输出格式、环境限制、或调用前提。
 
 从 `Tool` trait 自动生成：
 
 ```rust
-pub fn tool_to_definition(tool: &dyn DynTool) -> ToolDefinition {
+pub fn tool_to_definition(tool: &dyn DynTool, ctx: &ToolDefinitionContext) -> ToolDefinition {
     ToolDefinition {
         tool_type: "function".into(),
         function: FunctionDefinition {
             name: tool.name().into(),
             description: tool.description().into(),
             parameters: tool.parameters_schema(),
+            extra_prompt: tool.extra_prompt(ctx),
         },
     }
 }
 ```
+
+对应的 `Tool` trait 提供默认实现：
+
+```rust
+fn extra_prompt(&self, _ctx: &ToolDefinitionContext) -> Option<String> {
+    None
+}
+```
+
+只有需要运行时动态提示的 tool 才需要覆写该方法。
 
 ## DynTool + ToolRegistry
 

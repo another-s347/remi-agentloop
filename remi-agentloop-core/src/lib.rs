@@ -120,7 +120,8 @@ pub mod prelude {
     pub use crate::state::{step, Action, AgentPhase, AgentState, StepConfig, StepEvent};
     pub use crate::tool::{
         registry::{DefaultToolRegistry, ToolRegistry},
-        InterruptRequest, Tool, ToolContext, ToolDefinition, ToolOutput, ToolResult,
+        InterruptRequest, Tool, ToolContext, ToolDefinition, ToolDefinitionContext, ToolOutput,
+        ToolResult,
     };
     pub use crate::tracing::stdout::StdoutTracer;
     pub use crate::tracing::{DynTracer, Tracer};

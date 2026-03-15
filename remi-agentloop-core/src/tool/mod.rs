@@ -98,6 +98,33 @@ pub struct ToolContext {
     pub user_state: Arc<RwLock<serde_json::Value>>,
 }
 
+/// Runtime context used when generating tool definitions for the model.
+///
+/// Unlike [`ToolContext`], this snapshot is read-only and may be built before
+/// a tool ever executes. Tools can inspect it to append optional, per-request
+/// guidance to their advertised definition.
+#[derive(Debug, Clone, Default)]
+pub struct ToolDefinitionContext {
+    /// Thread identifier — `None` when unavailable.
+    pub thread_id: Option<ThreadId>,
+    /// Current run identifier — `None` when definitions are generated before a
+    /// run is created by an outer layer.
+    pub run_id: Option<RunId>,
+    /// Request-level metadata forwarded from [`LoopInput`](crate::types::LoopInput).
+    pub metadata: Option<serde_json::Value>,
+    /// Snapshot of the current user-managed tool state.
+    pub user_state: serde_json::Value,
+}
+
+impl ToolDefinitionContext {
+    pub fn from_user_state(user_state: serde_json::Value) -> Self {
+        Self {
+            user_state,
+            ..Self::default()
+        }
+    }
+}
+
 // ── InterruptRequest ──────────────────────────────────────────────────────────
 
 /// A request to pause the agent loop and wait for external input.
@@ -270,6 +297,16 @@ pub trait Tool {
     /// The more precise this is, the better the model's tool-selection accuracy.
     fn description(&self) -> &str;
 
+    /// Optional per-request guidance appended to the tool definition sent to
+    /// the model.
+    ///
+    /// Most tools should keep the default `None`. Override this only when the
+    /// tool needs dynamic, runtime-specific instructions that cannot live in
+    /// the static description.
+    fn extra_prompt(&self, _ctx: &ToolDefinitionContext) -> Option<String> {
+        None
+    }
+
     /// JSON Schema for the tool's `arguments` object.
     ///
     /// Must be a JSON Schema `object` with a `properties` key.  The model
@@ -339,6 +376,8 @@ pub struct FunctionDefinition {
     pub name: String,
     pub description: String,
     pub parameters: serde_json::Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub extra_prompt: Option<String>,
 }
 
 // ── DynTool ───────────────────────────────────────────────────────────────────
@@ -350,6 +389,7 @@ pub type BoxedToolResult<'a> = ToolResult<BoxedToolStream<'a>>;
 pub(crate) trait DynTool: Send + Sync {
     fn name(&self) -> &str;
     fn description(&self) -> &str;
+    fn extra_prompt(&self, ctx: &ToolDefinitionContext) -> Option<String>;
     fn parameters_schema(&self) -> serde_json::Value;
     fn enabled(&self, user_state: &serde_json::Value) -> bool;
     fn execute_boxed<'a>(
@@ -366,6 +406,9 @@ impl<T: Tool + Send + Sync> DynTool for T {
     }
     fn description(&self) -> &str {
         Tool::description(self)
+    }
+    fn extra_prompt(&self, ctx: &ToolDefinitionContext) -> Option<String> {
+        Tool::extra_prompt(self, ctx)
     }
     fn parameters_schema(&self) -> serde_json::Value {
         Tool::parameters_schema(self)
@@ -388,13 +431,14 @@ impl<T: Tool + Send + Sync> DynTool for T {
 }
 
 /// Helper: convert Tool → ToolDefinition
-pub(crate) fn tool_to_definition(tool: &dyn DynTool) -> ToolDefinition {
+pub(crate) fn tool_to_definition(tool: &dyn DynTool, ctx: &ToolDefinitionContext) -> ToolDefinition {
     ToolDefinition {
         tool_type: "function".into(),
         function: FunctionDefinition {
             name: tool.name().into(),
             description: tool.description().into(),
             parameters: tool.parameters_schema(),
+            extra_prompt: tool.extra_prompt(ctx),
         },
     }
 }
