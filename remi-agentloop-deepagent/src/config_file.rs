@@ -13,6 +13,13 @@
 //! base_url = "https://api.openai.com/v1"   # optional
 //! model    = "gpt-4o"
 //!
+//! [model.rate_limit_retry]
+//! max_retries = 4
+//! initial_delay_ms = 500
+//! max_delay_ms = 8000
+//! multiplier = 2.0
+//! respect_retry_after = true
+//!
 //! [agent]
 //! # system = "You are..."   # optional – uses built-in default if absent
 //! max_turns              = 20
@@ -29,6 +36,7 @@ use std::path::PathBuf;
 
 use crate::agent::DeepAgentBuilder;
 use remi_core::model::ChatModel;
+use remi_model::RateLimitRetryPolicy;
 
 // ── Sub-sections ──────────────────────────────────────────────────────────────
 
@@ -47,6 +55,10 @@ pub struct ModelConfig {
     /// Model name (e.g. `"gpt-4o"`, `"kimi-k2.5"`).
     #[serde(default = "defaults::model")]
     pub model: String,
+
+    /// Optional 429 retry/backoff policy for model calls.
+    #[serde(default)]
+    pub rate_limit_retry: Option<RateLimitRetryPolicy>,
 }
 
 impl Default for ModelConfig {
@@ -59,6 +71,7 @@ impl Default for ModelConfig {
                 .or_else(|_| std::env::var("OPENAI_BASE_URL"))
                 .ok(),
             model: std::env::var("REMI_MODEL").unwrap_or_else(|_| defaults::model()),
+            rate_limit_retry: None,
         }
     }
 }
@@ -274,6 +287,14 @@ api_key = ""
 
 # Model name.
 model = "gpt-4o"
+
+# Optional 429 retry/backoff policy for model calls.
+# [model.rate_limit_retry]
+# max_retries = 4
+# initial_delay_ms = 500
+# max_delay_ms = 8000
+# multiplier = 2.0
+# respect_retry_after = true
 
 [agent]
 # System prompt override (uses built-in default when commented out).

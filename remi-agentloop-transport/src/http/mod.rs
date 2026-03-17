@@ -54,6 +54,8 @@ pub use send_bounds::MaybeSend;
 pub struct HttpStreamingResponse {
     /// HTTP status code (e.g. 200, 400, 500).
     pub status: u16,
+    /// Response headers as `(name, value)` pairs.
+    pub headers: Vec<(String, String)>,
     /// Streaming body — each item is a chunk of bytes.
     #[cfg(not(target_arch = "wasm32"))]
     pub body: Pin<Box<dyn Stream<Item = Result<Vec<u8>, HttpTransportError>> + Send>>,

@@ -107,6 +107,7 @@ impl HttpTransport for WitHttpTransport {
 
             Ok(HttpStreamingResponse {
                 status,
+                headers: Vec::new(),
                 body: Box::pin(stream),
             })
         }

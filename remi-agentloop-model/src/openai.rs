@@ -1,11 +1,14 @@
 use async_stream::stream;
 use futures::{Stream, StreamExt};
+use futures_timer::Delay;
 use serde::Deserialize;
 use std::future::Future;
+use std::time::Duration;
 
 use remi_core::agent::Agent;
 #[cfg(feature = "http-client")]
 use remi_core::config::AgentConfig;
+pub use remi_core::config::RateLimitRetryPolicy;
 use remi_core::error::AgentError;
 use remi_transport::HttpTransport;
 use remi_core::types::{ChatRequest, ChatResponseChunk, Role};
@@ -74,6 +77,7 @@ pub struct OpenAIClient<T: HttpTransport> {
     base_url: String,
     api_key: String,
     model: String,
+    rate_limit_retry: Option<RateLimitRetryPolicy>,
 }
 
 impl<T: HttpTransport> Clone for OpenAIClient<T> {
@@ -83,6 +87,7 @@ impl<T: HttpTransport> Clone for OpenAIClient<T> {
             base_url: self.base_url.clone(),
             api_key: self.api_key.clone(),
             model: self.model.clone(),
+            rate_limit_retry: self.rate_limit_retry.clone(),
         }
     }
 }
@@ -105,6 +110,9 @@ impl OpenAIClient<remi_transport::ReqwestTransport> {
         if let Some(model) = &config.model {
             client.model = model.clone();
         }
+        if let Some(policy) = &config.rate_limit_retry {
+            client.rate_limit_retry = Some(policy.clone());
+        }
         client
     }
 }
@@ -124,6 +132,7 @@ impl<T: HttpTransport> OpenAIClient<T> {
             base_url: "https://api.openai.com/v1".into(),
             api_key: api_key.into(),
             model: "gpt-4o".into(),
+            rate_limit_retry: None,
         }
     }
 
@@ -136,6 +145,61 @@ impl<T: HttpTransport> OpenAIClient<T> {
         self.model = model.into();
         self
     }
+
+    pub fn with_rate_limit_retry(mut self, policy: RateLimitRetryPolicy) -> Self {
+        self.rate_limit_retry = Some(policy);
+        self
+    }
+
+    pub fn with_default_rate_limit_retry(self) -> Self {
+        self.with_rate_limit_retry(RateLimitRetryPolicy::default())
+    }
+
+    pub fn without_rate_limit_retry(mut self) -> Self {
+        self.rate_limit_retry = None;
+        self
+    }
+}
+
+async fn read_response_body<S>(mut body_stream: S) -> String
+where
+    S: Stream<Item = Result<Vec<u8>, remi_transport::HttpTransportError>> + Unpin,
+{
+    let mut body_bytes = Vec::new();
+    while let Some(chunk) = body_stream.next().await {
+        if let Ok(bytes) = chunk {
+            body_bytes.extend_from_slice(&bytes);
+        }
+    }
+    String::from_utf8_lossy(&body_bytes).into_owned()
+}
+
+fn header_value<'a>(headers: &'a [(String, String)], name: &str) -> Option<&'a str> {
+    headers
+        .iter()
+        .find(|(key, _)| key.eq_ignore_ascii_case(name))
+        .map(|(_, value)| value.as_str())
+}
+
+fn retry_after_delay(headers: &[(String, String)]) -> Option<Duration> {
+    if let Some(value) = header_value(headers, "retry-after-ms") {
+        if let Ok(ms) = value.trim().parse::<u64>() {
+            return Some(Duration::from_millis(ms));
+        }
+    }
+    header_value(headers, "retry-after")
+        .and_then(|value| value.trim().parse::<f64>().ok())
+        .filter(|secs| *secs >= 0.0)
+        .map(Duration::from_secs_f64)
+}
+
+fn model_http_error(status: u16, body_text: &str, retries_used: usize) -> AgentError {
+    if status == 429 && retries_used > 0 {
+        return AgentError::model(format!(
+            "HTTP {status} after {retries_used} retries: {body_text}"
+        ));
+    }
+    AgentError::model(format!("HTTP {status}: {body_text}"))
 }
 
 impl<T: HttpTransport> Agent for OpenAIClient<T> {
@@ -151,12 +215,17 @@ impl<T: HttpTransport> Agent for OpenAIClient<T> {
         let url = format!("{}/chat/completions", self.base_url);
         let api_key = self.api_key.clone();
         let model = self.model.clone();
+        let client_rate_limit_retry = self.rate_limit_retry.clone();
 
         async move {
             let mut req = req;
             if req.model.is_empty() {
                 req.model = model;
             }
+            let rate_limit_retry = req
+                .rate_limit_retry
+                .clone()
+                .or(client_rate_limit_retry);
             req.stream = true;
             req.stream_options = Some(remi_core::types::StreamOptions {
                 include_usage: true,
@@ -170,26 +239,36 @@ impl<T: HttpTransport> Agent for OpenAIClient<T> {
                 ("Content-Type".into(), "application/json".into()),
             ];
 
-            let response = transport
-                .post_streaming(url, headers, body)
-                .await
-                .map_err(|e| AgentError::model(e.to_string()))?;
+            let mut retries_used = 0usize;
+            let response = loop {
+                let response = transport
+                    .post_streaming(url.clone(), headers.clone(), body.clone())
+                    .await
+                    .map_err(|e| AgentError::model(e.to_string()))?;
 
-            if response.status < 200 || response.status >= 300 {
-                // Read the error body
-                let mut body_bytes = Vec::new();
-                let mut body_stream = response.body;
-                while let Some(chunk) = body_stream.next().await {
-                    if let Ok(bytes) = chunk {
-                        body_bytes.extend_from_slice(&bytes);
+                if (200..300).contains(&response.status) {
+                    break response;
+                }
+
+                let status = response.status;
+                let retry_after = retry_after_delay(&response.headers);
+                let body_text = read_response_body(response.body).await;
+
+                if status == 429 {
+                    if let Some(policy) = &rate_limit_retry {
+                        if retries_used < policy.max_retries {
+                            let delay = policy.delay_for_retry(retries_used, retry_after);
+                            retries_used += 1;
+                            if !delay.is_zero() {
+                                Delay::new(delay).await;
+                            }
+                            continue;
+                        }
                     }
                 }
-                let body_text = String::from_utf8_lossy(&body_bytes);
-                return Err(AgentError::model(format!(
-                    "HTTP {}: {}",
-                    response.status, body_text
-                )));
-            }
+
+                return Err(model_http_error(status, &body_text, retries_used));
+            };
 
             // Parse SSE from the streaming body — transport-agnostic
             let lines = remi_transport::http::sse_lines(response.body);
@@ -265,5 +344,177 @@ impl<T: HttpTransport> Agent for OpenAIClient<T> {
                 yield ChatResponseChunk::Done;
             })
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::VecDeque;
+    use std::sync::{Arc, Mutex};
+
+    use remi_core::types::{ChatRequest, Message};
+    use remi_transport::{HttpStreamingResponse, HttpTransport, HttpTransportError};
+
+    #[derive(Clone)]
+    struct TestTransport {
+        responses: Arc<Mutex<VecDeque<TestResponse>>>,
+        call_count: Arc<Mutex<usize>>,
+    }
+
+    #[derive(Clone)]
+    struct TestResponse {
+        status: u16,
+        headers: Vec<(String, String)>,
+        body: String,
+    }
+
+    impl TestTransport {
+        fn new(responses: Vec<TestResponse>) -> Self {
+            Self {
+                responses: Arc::new(Mutex::new(VecDeque::from(responses))),
+                call_count: Arc::new(Mutex::new(0)),
+            }
+        }
+
+        fn call_count(&self) -> usize {
+            *self.call_count.lock().expect("call_count lock poisoned")
+        }
+    }
+
+    impl HttpTransport for TestTransport {
+        fn post_streaming(
+            &self,
+            _url: String,
+            _headers: Vec<(String, String)>,
+            _body: Vec<u8>,
+        ) -> impl Future<Output = Result<HttpStreamingResponse, HttpTransportError>> + Send {
+            let response = self
+                .responses
+                .lock()
+                .expect("responses lock poisoned")
+                .pop_front()
+                .expect("missing test response");
+            let call_count = self.call_count.clone();
+
+            async move {
+                *call_count.lock().expect("call_count lock poisoned") += 1;
+                Ok(HttpStreamingResponse {
+                    status: response.status,
+                    headers: response.headers,
+                    body: Box::pin(futures::stream::iter(vec![Ok(response.body.into_bytes())])),
+                })
+            }
+        }
+    }
+
+    fn request() -> ChatRequest {
+        ChatRequest {
+            model: String::new(),
+            messages: vec![Message::user("hello")],
+            tools: None,
+            temperature: None,
+            max_tokens: None,
+            stream: true,
+            stream_options: None,
+            metadata: None,
+            rate_limit_retry: None,
+            extra_body: serde_json::Map::new(),
+        }
+    }
+
+    fn sse_ok_body() -> String {
+        "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"},\"finish_reason\":null}]}\n\ndata: [DONE]\n".to_string()
+    }
+
+    #[test]
+    fn respects_server_retry_after_when_enabled() {
+        let policy = RateLimitRetryPolicy {
+            initial_delay_ms: 500,
+            max_delay_ms: 2_000,
+            multiplier: 2.0,
+            respect_retry_after: true,
+            ..RateLimitRetryPolicy::default()
+        };
+
+        assert_eq!(
+            policy.delay_for_retry(0, Some(Duration::from_secs(3))),
+            Duration::from_secs(3)
+        );
+    }
+
+    #[test]
+    fn retries_429_then_succeeds() {
+        let transport = TestTransport::new(vec![
+            TestResponse {
+                status: 429,
+                headers: vec![("retry-after-ms".into(), "0".into())],
+                body: "rate limited".into(),
+            },
+            TestResponse {
+                status: 200,
+                headers: Vec::new(),
+                body: sse_ok_body(),
+            },
+        ]);
+
+        let client = OpenAIClient::with_transport(transport.clone(), "test-key").with_rate_limit_retry(
+            RateLimitRetryPolicy {
+                max_retries: 1,
+                initial_delay_ms: 0,
+                max_delay_ms: 0,
+                multiplier: 2.0,
+                respect_retry_after: true,
+            },
+        );
+
+        let result = futures::executor::block_on(async {
+            let stream = client.chat(request()).await.expect("chat should succeed");
+            futures::pin_mut!(stream);
+
+            let mut chunks = Vec::new();
+            while let Some(chunk) = stream.next().await {
+                chunks.push(chunk);
+            }
+            chunks
+        });
+
+        assert!(matches!(result.first(), Some(ChatResponseChunk::Delta { content, .. }) if content == "hi"));
+        assert!(matches!(result.last(), Some(ChatResponseChunk::Done)));
+        assert_eq!(transport.call_count(), 2);
+    }
+
+    #[test]
+    fn stops_after_retry_budget_is_exhausted() {
+        let transport = TestTransport::new(vec![
+            TestResponse {
+                status: 429,
+                headers: vec![("retry-after-ms".into(), "0".into())],
+                body: "rate limited".into(),
+            },
+            TestResponse {
+                status: 429,
+                headers: vec![("retry-after-ms".into(), "0".into())],
+                body: "still rate limited".into(),
+            },
+        ]);
+
+        let client = OpenAIClient::with_transport(transport.clone(), "test-key").with_rate_limit_retry(
+            RateLimitRetryPolicy {
+                max_retries: 1,
+                initial_delay_ms: 0,
+                max_delay_ms: 0,
+                multiplier: 2.0,
+                respect_retry_after: true,
+            },
+        );
+
+        let err = match futures::executor::block_on(client.chat(request())) {
+            Ok(_) => panic!("chat should fail"),
+            Err(err) => err,
+        };
+
+        assert_eq!(err.to_string(), "Model error: HTTP 429 after 1 retries: still rate limited");
+        assert_eq!(transport.call_count(), 2);
     }
 }

@@ -135,6 +135,7 @@ where
             stream: true,
             stream_options: None,
             metadata: None,
+            rate_limit_retry: None,
             extra_body: serde_json::Map::new(),
         };
 

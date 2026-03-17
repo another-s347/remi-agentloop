@@ -158,6 +158,7 @@ fn evaluate(
                         temperature: None,
                         max_tokens: None,
                         metadata: None,
+                        rate_limit_retry: None,
                     },
                     thread_id: ThreadId("wasm-calc".into()),
                     run_id: RunId("run-0".into()),

@@ -157,6 +157,9 @@ fn rust_config_to_wit(c: AgentConfig) -> remi::agentloop::config::AgentConfig {
         temperature: c.temperature,
         max_tokens: c.max_tokens,
         timeout_ms: c.timeout_ms,
+        rate_limit_retry_json: c
+            .rate_limit_retry
+            .and_then(|value| serde_json::to_string(&value).ok()),
         headers_json: if c.headers.is_empty() {
             None
         } else {
@@ -271,6 +274,9 @@ fn rust_step_cfg_to_wit(c: remi_agentloop::state::StepConfig) -> wit::StepConfig
         model: c.model,
         temperature: c.temperature,
         max_tokens: c.max_tokens,
+        rate_limit_retry_json: c
+            .rate_limit_retry
+            .and_then(|value| serde_json::to_string(&value).ok()),
         metadata_json: c
             .metadata
             .map(|v| serde_json::to_string(&v).unwrap_or_default()),
@@ -445,6 +451,9 @@ fn wit_step_cfg_to_rust(c: wit::StepConfig) -> remi_agentloop::state::StepConfig
         model: c.model,
         temperature: c.temperature,
         max_tokens: c.max_tokens,
+        rate_limit_retry: c
+            .rate_limit_retry_json
+            .and_then(|j| serde_json::from_str(&j).ok()),
         metadata: c.metadata_json.and_then(|j| serde_json::from_str(&j).ok()),
         extra_body: serde_json::Map::new(),
     }

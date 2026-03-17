@@ -94,6 +94,7 @@ impl<M: ChatModel> AgentLoop<M> {
             temperature: self.config.temperature,
             max_tokens: self.config.max_tokens,
             metadata: None,
+            rate_limit_retry: self.config.rate_limit_retry.clone(),
             extra_body,
         });
         state.system_prompt = if self.system_prompt.is_empty() {

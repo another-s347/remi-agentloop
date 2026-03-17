@@ -13,7 +13,13 @@
 //!   cargo run ... -- --init
 
 use futures::StreamExt;
-use remi_deepagent::{DeepAgentBuilder, DeepAgentConfig, DeepAgentEvent, SkillEvent, TodoEvent};
+use remi_agentloop_deepagent::{
+    DeepAgentBuilder,
+    DeepAgentConfig,
+    DeepAgentEvent,
+    SkillEvent,
+    TodoEvent,
+};
 use remi_model::OpenAIClient;
 
 #[tokio::main]
@@ -40,6 +46,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_model(&cfg.model.model);
     if let Some(url) = &cfg.model.base_url {
         oai = oai.with_base_url(url.clone());
+    }
+    if let Some(policy) = &cfg.model.rate_limit_retry {
+        oai = oai.with_rate_limit_retry(policy.clone());
     }
 
     // ── Build deep agent ─────────────────────────────────────────────────────
@@ -147,6 +156,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     println!("\n  🗑️  SKILL deleted '{name}'");
                 }
             },
+
+            DeepAgentEvent::History(_) => {}
         }
     }
 

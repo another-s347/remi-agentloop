@@ -117,6 +117,7 @@ impl HttpTransport for WitHttpTransport {{
 
             Ok(HttpStreamingResponse {{
                 status,
+                headers: Vec::new(),
                 body: Box::pin(stream),
             }})
         }}
@@ -350,6 +351,7 @@ impl HttpTransport for FetchTransport {{
 
             Ok(HttpStreamingResponse {{
                 status,
+                headers: Vec::new(),
                 body: Box::pin(body_stream),
             }})
         }}

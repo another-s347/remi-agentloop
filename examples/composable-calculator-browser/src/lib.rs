@@ -110,6 +110,7 @@ impl HttpTransport for FetchTransport {
 
             Ok(HttpStreamingResponse {
                 status,
+                headers: Vec::new(),
                 body: Box::pin(body_stream),
             })
         }

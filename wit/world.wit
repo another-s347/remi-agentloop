@@ -24,6 +24,8 @@ interface config {
         temperature: option<f64>,
         max-tokens: option<u32>,
         timeout-ms: option<u64>,
+        /// JSON-serialised rate limit retry policy.
+        rate-limit-retry-json: option<string>,
         /// JSON-serialised `HashMap<String, String>` of extra HTTP headers.
         headers-json: option<string>,
         /// JSON-serialised `serde_json::Value` for arbitrary extra fields.
@@ -158,6 +160,8 @@ interface agent {
         model: string,
         temperature: option<f64>,
         max-tokens: option<u32>,
+        /// JSON-serialised rate limit retry policy.
+        rate-limit-retry-json: option<string>,
         /// JSON-encoded `serde_json::Value` metadata blob.
         metadata-json: option<string>,
     }

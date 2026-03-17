@@ -226,6 +226,17 @@ pub struct StepConfig {
     pub max_tokens: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rate_limit_retry: Option<RateLimitRetryPolicy>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RateLimitRetryPolicy {
+    pub max_retries: usize,
+    pub initial_delay_ms: u64,
+    pub max_delay_ms: u64,
+    pub multiplier: f64,
+    pub respect_retry_after: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -497,6 +508,8 @@ pub struct AgentConfig {
     pub max_tokens: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub timeout_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rate_limit_retry: Option<RateLimitRetryPolicy>,
     #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
     pub headers: std::collections::HashMap<String, String>,
     #[serde(default, skip_serializing_if = "serde_json::Value::is_null")]
@@ -527,6 +540,9 @@ impl AgentConfig {
         }
         if other.timeout_ms.is_some() {
             self.timeout_ms = other.timeout_ms;
+        }
+        if other.rate_limit_retry.is_some() {
+            self.rate_limit_retry = other.rate_limit_retry.clone();
         }
         for (k, v) in &other.headers {
             self.headers.insert(k.clone(), v.clone());

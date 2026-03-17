@@ -15,5 +15,6 @@ remi-transport = { path = "../remi-agentloop-transport", package = "remi-agentlo
 
 futures = { workspace = true }
 async-stream = { workspace = true }
+futures-timer = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

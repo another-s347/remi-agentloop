@@ -60,6 +60,16 @@ impl HttpTransport for ReqwestTransport {
                 .map_err(|e| HttpTransportError::new(e.to_string()))?;
 
             let status = response.status().as_u16();
+            let headers = response
+                .headers()
+                .iter()
+                .filter_map(|(name, value)| {
+                    value
+                        .to_str()
+                        .ok()
+                        .map(|value| (name.as_str().to_string(), value.to_string()))
+                })
+                .collect();
 
             let byte_stream = response.bytes_stream().map(|result| {
                 result
@@ -69,6 +79,7 @@ impl HttpTransport for ReqwestTransport {
 
             Ok(HttpStreamingResponse {
                 status,
+                headers,
                 body: Box::pin(byte_stream),
             })
         }

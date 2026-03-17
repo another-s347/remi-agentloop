@@ -44,8 +44,14 @@ use ratatui::{
     Frame, Terminal,
 };
 use remi_core::types::Message as AgentMessage;
-use remi_deepagent::skill::store::FileSkillStore;
-use remi_deepagent::{DeepAgentBuilder, DeepAgentConfig, DeepAgentEvent, SkillEvent, TodoEvent};
+use remi_agentloop_deepagent::skill::store::FileSkillStore;
+use remi_agentloop_deepagent::{
+    DeepAgentBuilder,
+    DeepAgentConfig,
+    DeepAgentEvent,
+    SkillEvent,
+    TodoEvent,
+};
 use remi_model::OpenAIClient;
 use remi_transport::ReqwestTransport;
 
@@ -1011,6 +1017,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut oai: AppModel = OpenAIClient::new(cfg.model.api_key.clone()).with_model(&model_name);
     if let Some(url) = &cfg.model.base_url {
         oai = oai.with_base_url(url.clone());
+    }
+    if let Some(policy) = &cfg.model.rate_limit_retry {
+        oai = oai.with_rate_limit_retry(policy.clone());
     }
 
     // ── Terminal setup ─────────────────────────────────────────────────────

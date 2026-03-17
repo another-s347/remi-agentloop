@@ -49,6 +49,7 @@
 use async_stream::stream;
 use futures::{Stream, StreamExt};
 
+use crate::config::RateLimitRetryPolicy;
 use crate::error::AgentError;
 use crate::model::ChatModel;
 use crate::tool::ToolDefinition;
@@ -181,6 +182,9 @@ pub struct StepConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata: Option<serde_json::Value>,
 
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rate_limit_retry: Option<RateLimitRetryPolicy>,
+
     /// Provider-specific extra fields forwarded verbatim to the model request body.
     #[serde(default, skip_serializing_if = "serde_json::Map::is_empty")]
     pub extra_body: serde_json::Map<String, serde_json::Value>,
@@ -193,6 +197,7 @@ impl StepConfig {
             temperature: None,
             max_tokens: None,
             metadata: None,
+            rate_limit_retry: None,
             extra_body: serde_json::Map::new(),
         }
     }
@@ -392,6 +397,7 @@ pub fn step<M: ChatModel>(
             stream: true,
             stream_options: Some(StreamOptions { include_usage: true }),
             metadata: state.config.metadata.clone(),
+            rate_limit_retry: state.config.rate_limit_retry.clone(),
             extra_body: state.config.extra_body.clone(),
         };
 

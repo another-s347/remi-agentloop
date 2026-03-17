@@ -428,6 +428,7 @@ pub struct FunctionCall {
 
 // ── ChatRequest / ChatResponseChunk ──────────────────────────────────────────
 
+use crate::config::RateLimitRetryPolicy;
 use crate::tool::ToolDefinition;
 
 #[derive(Debug, Clone, Serialize)]
@@ -450,6 +451,9 @@ pub struct ChatRequest {
     pub stream_options: Option<StreamOptions>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata: Option<serde_json::Value>,
+    /// Internal retry policy for rate-limited model calls.
+    #[serde(skip)]
+    pub rate_limit_retry: Option<RateLimitRetryPolicy>,
     /// Provider-specific extra parameters merged into the top-level request body.
     ///
     /// Keys are flattened directly into the JSON object, enabling any

@@ -106,6 +106,7 @@ interface config {
         temperature: option<f64>,
         max-tokens: option<u32>,
         timeout-ms: option<u64>,
+        rate-limit-retry-json: option<string>,
         headers-json: option<string>,
         extra-json: option<string>,
     }
@@ -184,6 +185,7 @@ interface agent {
         model: string,
         temperature: option<f64>,
         max-tokens: option<u32>,
+        rate-limit-retry-json: option<string>,
         metadata-json: option<string>,
     }
     record agent-state {
@@ -508,6 +510,8 @@ macro_rules! export_agent {
                     model: c.model,
                     temperature: c.temperature,
                     max_tokens: c.max_tokens,
+                    rate_limit_retry: c.rate_limit_retry_json
+                        .and_then(|j| $crate::_serde_json::from_str(&j).ok()),
                     metadata: c.metadata_json
                         .and_then(|j| $crate::_serde_json::from_str(&j).ok()),
                 }
@@ -518,6 +522,8 @@ macro_rules! export_agent {
                     model: c.model,
                     temperature: c.temperature,
                     max_tokens: c.max_tokens,
+                    rate_limit_retry_json: c.rate_limit_retry
+                        .map(|v| $crate::_serde_json::to_string(&v).unwrap_or_default()),
                     metadata_json: c.metadata
                         .map(|v| $crate::_serde_json::to_string(&v).unwrap_or_default()),
                 }
@@ -664,6 +670,8 @@ macro_rules! export_agent {
                     temperature: c.temperature,
                     max_tokens:  c.max_tokens,
                     timeout_ms:  c.timeout_ms,
+                    rate_limit_retry: c.rate_limit_retry_json
+                        .and_then(|j| $crate::_serde_json::from_str(&j).ok()),
                     headers: c.headers_json
                         .and_then(|j| $crate::_serde_json::from_str(&j).ok())
                         .unwrap_or_default(),

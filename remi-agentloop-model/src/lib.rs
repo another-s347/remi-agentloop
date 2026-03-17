@@ -1,3 +1,3 @@
 pub mod openai;
 
-pub use openai::OpenAIClient;
+pub use openai::{OpenAIClient, RateLimitRetryPolicy};

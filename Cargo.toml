@@ -30,6 +30,7 @@ repository = "https://github.com/another-s347/remi-agentloop"
 # Async
 futures = "0.3"
 async-stream = "0.3"
+futures-timer = "3"
 pin-project-lite = "0.2"
 tokio = { version = "1", features = ["full"] }
 tokio-stream = "0.1"
