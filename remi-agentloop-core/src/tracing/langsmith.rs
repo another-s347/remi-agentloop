@@ -14,6 +14,7 @@
 //!     .with_project("my-agent");
 //! ```
 
+use std::collections::HashMap;
 use std::future::Future;
 
 use serde::Serialize;
@@ -101,6 +102,7 @@ pub struct LangSmithTracer {
     tx: std::sync::Mutex<Option<mpsc::UnboundedSender<LangSmithMessage>>>,
     /// Handle to the background sender task.
     handle: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
+    custom_event_counters: std::sync::Mutex<HashMap<String, usize>>,
 }
 
 impl LangSmithTracer {
@@ -114,6 +116,7 @@ impl LangSmithTracer {
             project_name: "default".to_string(),
             tx: std::sync::Mutex::new(Some(tx)),
             handle: std::sync::Mutex::new(Some(handle)),
+            custom_event_counters: std::sync::Mutex::new(HashMap::new()),
         }
     }
 
@@ -218,6 +221,24 @@ impl LangSmithTracer {
     fn tool_run_id(run_id: &crate::types::RunId, tool_call_id: &str) -> String {
         let ns = Uuid::parse_str(&run_id.0).unwrap_or_else(|_| Uuid::nil());
         Uuid::new_v5(&ns, format!("tool:{tool_call_id}").as_bytes()).to_string()
+    }
+
+    fn next_custom_event_index(&self, run_id: &str) -> usize {
+        self.custom_event_counters
+            .lock()
+            .ok()
+            .map(|mut guard| {
+                let counter = guard.entry(run_id.to_string()).or_insert(0);
+                let index = *counter;
+                *counter += 1;
+                index
+            })
+            .unwrap_or(0)
+    }
+
+    fn custom_run_id(run_id: &crate::types::RunId, name: &str, index: usize) -> String {
+        let ns = Uuid::parse_str(&run_id.0).unwrap_or_else(|_| Uuid::nil());
+        Uuid::new_v5(&ns, format!("custom:{name}:{index}").as_bytes()).to_string()
     }
 
     /// Background task: drains the mpsc channel and performs HTTP calls.
@@ -459,6 +480,41 @@ impl Tracer for LangSmithTracer {
     /// No-op: turns are implicit in the LangSmith run tree via the sequence
     /// of LLM child runs.
     fn on_turn_start(&self, _event: &TurnStartTrace) -> impl Future<Output = ()> {
+        async {}
+    }
+
+    fn on_custom(&self, name: &str, data: &serde_json::Value) -> impl Future<Output = ()> {
+        let run_id = data
+            .get("run_id")
+            .and_then(|value| value.as_str())
+            .map(|value| crate::types::RunId(value.to_string()));
+
+        if let Some(run_id) = run_id {
+            let index = self.next_custom_event_index(&run_id.0);
+            let custom_id = Self::custom_run_id(&run_id, name, index);
+            let timestamp = chrono::Utc::now().to_rfc3339();
+            self.post(LangSmithRun {
+                id: custom_id,
+                parent_run_id: Some(run_id.0),
+                run_type: "chain".to_string(),
+                name: format!("custom:{name}"),
+                inputs: data.clone(),
+                outputs: Some(serde_json::json!({
+                    "custom_event": name,
+                })),
+                start_time: timestamp.clone(),
+                end_time: Some(timestamp),
+                extra: Some(serde_json::json!({
+                    "custom_event_name": name,
+                })),
+                session_name: self.project_name.clone(),
+                status: Some("success".to_string()),
+                error: None,
+                metadata: None,
+                usage_metadata: None,
+            });
+        }
+
         async {}
     }
 
