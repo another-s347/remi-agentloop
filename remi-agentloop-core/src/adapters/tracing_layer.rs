@@ -8,8 +8,11 @@ use std::time::Instant;
 
 use crate::agent::{Agent, Layer};
 use crate::error::AgentError;
-use crate::tracing::{ModelEndTrace, RunEndTrace, RunStartTrace, RunStatus, TurnStartTrace};
-use crate::types::AgentEvent;
+use crate::tracing::{
+    ExternalToolResultTrace, ModelEndTrace, ResumeTrace, RunEndTrace, RunStartTrace, RunStatus,
+    ToolCallTrace, ToolExecutionHandoffTrace, ToolOutcomeTrace, TurnStartTrace,
+};
+use crate::types::{AgentEvent, LoopInput, ToolCallOutcome};
 
 // ── TracingLayer ──────────────────────────────────────────────────────────────
 
@@ -64,6 +67,31 @@ pub struct TracedAgent<A, T> {
     tracer: T,
 }
 
+fn outcome_trace(outcome: &ToolCallOutcome) -> ToolOutcomeTrace {
+    match outcome {
+        ToolCallOutcome::Result {
+            tool_call_id,
+            tool_name,
+            content,
+        } => ToolOutcomeTrace {
+            tool_call_id: tool_call_id.clone(),
+            tool_name: tool_name.clone(),
+            result: Some(content.text_content()),
+            error: None,
+        },
+        ToolCallOutcome::Error {
+            tool_call_id,
+            tool_name,
+            error,
+        } => ToolOutcomeTrace {
+            tool_call_id: tool_call_id.clone(),
+            tool_name: tool_name.clone(),
+            result: None,
+            error: Some(error.clone()),
+        },
+    }
+}
+
 impl<A, T> Agent for TracedAgent<A, T>
 where
     A: Agent<Request = crate::types::LoopInput, Response = AgentEvent, Error = AgentError>,
@@ -78,13 +106,38 @@ where
         req: crate::types::LoopInput,
     ) -> impl Future<Output = Result<impl Stream<Item = AgentEvent>, AgentError>> {
         async move {
+            let initial_run_id = match &req {
+                LoopInput::Resume { state, results } => {
+                    let outcomes = results.iter().map(outcome_trace).collect::<Vec<_>>();
+                    self.tracer.on_resume(&ResumeTrace {
+                        run_id: state.run_id.clone(),
+                        payloads_count: results.len(),
+                        outcomes: outcomes.clone(),
+                        timestamp: chrono::Utc::now(),
+                    }).await;
+                    for outcome in &outcomes {
+                        self.tracer.on_external_tool_result(&ExternalToolResultTrace {
+                            run_id: state.run_id.clone(),
+                            tool_call_id: outcome.tool_call_id.clone(),
+                            tool_name: outcome.tool_name.clone(),
+                            result: outcome.result.clone(),
+                            error: outcome.error.clone(),
+                            timestamp: chrono::Utc::now(),
+                        }).await;
+                    }
+                    state.run_id.clone()
+                }
+                LoopInput::Cancel { state } => state.run_id.clone(),
+                LoopInput::Start { .. } => crate::types::RunId::new(),
+            };
+
             let inner_stream = self.inner.chat(req).await?;
 
             Ok(stream! {
                 let mut inner_stream = std::pin::pin!(inner_stream);
 
                 let run_start_time = Instant::now();
-                let mut run_id = crate::types::RunId::new();
+                let mut run_id = initial_run_id;
                 let mut turn = 1usize;
                 let mut total_prompt_tokens = 0u32;
                 let mut total_completion_tokens = 0u32;
@@ -149,6 +202,26 @@ where
                                 total_completion_tokens,
                                 duration: run_start_time.elapsed(),
                                 error: Some(e.to_string()),
+                                timestamp: chrono::Utc::now(),
+                            }).await;
+                        }
+                        AgentEvent::NeedToolExecution {
+                            state: _,
+                            tool_calls,
+                            completed_results,
+                        } => {
+                            self.tracer.on_tool_execution_handoff(&ToolExecutionHandoffTrace {
+                                run_id: run_id.clone(),
+                                turn,
+                                tool_calls: tool_calls.iter().map(|tc| ToolCallTrace {
+                                    id: tc.id.clone(),
+                                    name: tc.name.clone(),
+                                    arguments: tc.arguments.clone(),
+                                    result: None,
+                                    interrupted: false,
+                                    duration: std::time::Duration::ZERO,
+                                }).collect(),
+                                completed_results: completed_results.iter().map(outcome_trace).collect(),
                                 timestamp: chrono::Utc::now(),
                             }).await;
                         }

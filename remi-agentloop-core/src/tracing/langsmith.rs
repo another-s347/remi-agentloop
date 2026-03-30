@@ -23,8 +23,9 @@ use uuid::Uuid;
 
 use crate::config::AgentConfig;
 use crate::tracing::{
-    InterruptTrace, ModelEndTrace, ModelStartTrace, ResumeTrace, RunEndTrace, RunStartTrace,
-    RunStatus, ToolEndTrace, ToolStartTrace, Tracer, TurnStartTrace,
+    ExternalToolResultTrace, InterruptTrace, ModelEndTrace, ModelStartTrace, ResumeTrace,
+    RunEndTrace, RunStartTrace, RunStatus, ToolEndTrace, ToolExecutionHandoffTrace,
+    ToolStartTrace, Tracer, TurnStartTrace,
 };
 
 const DEFAULT_API_URL: &str = "https://api.smith.langchain.com";
@@ -468,6 +469,7 @@ impl Tracer for LangSmithTracer {
                 "extra": {
                     "resume_time": event.timestamp.to_rfc3339(),
                     "resume_payloads_count": event.payloads_count,
+                    "resume_outcomes": event.outcomes,
                 },
                 // Null clears these fields — signals the run is active again.
                 "end_time": serde_json::Value::Null,
@@ -475,6 +477,35 @@ impl Tracer for LangSmithTracer {
             }),
         );
         async {}
+    }
+
+    fn on_tool_execution_handoff(&self, event: &ToolExecutionHandoffTrace) -> impl Future<Output = ()> {
+        let data = serde_json::json!({
+            "run_id": event.run_id.0,
+            "turn": event.turn,
+            "tool_calls": event.tool_calls,
+            "completed_results": event.completed_results,
+            "timestamp": event.timestamp,
+        });
+
+        async move {
+            self.on_custom("tool_execution_handoff", &data).await;
+        }
+    }
+
+    fn on_external_tool_result(&self, event: &ExternalToolResultTrace) -> impl Future<Output = ()> {
+        let data = serde_json::json!({
+            "run_id": event.run_id.0,
+            "tool_call_id": event.tool_call_id,
+            "tool_name": event.tool_name,
+            "result": event.result,
+            "error": event.error,
+            "timestamp": event.timestamp,
+        });
+
+        async move {
+            self.on_custom("external_tool_result", &data).await;
+        }
     }
 
     /// No-op: turns are implicit in the LangSmith run tree via the sequence

@@ -34,8 +34,9 @@ use crate::state::{step, Action, AgentState, StepConfig, StepEvent};
 use crate::tool::registry::ToolRegistry;
 use crate::tool::{ToolDefinitionContext, ToolOutput, ToolResult};
 use crate::tracing::{
-    DynTracer, InterruptTrace, ModelEndTrace, ModelStartTrace, ResumeTrace, RunEndTrace,
-    RunStartTrace, RunStatus, ToolCallTrace, ToolEndTrace, ToolStartTrace, TurnStartTrace,
+    DynTracer, ExternalToolResultTrace, InterruptTrace, ModelEndTrace, ModelStartTrace,
+    ResumeTrace, RunEndTrace, RunStartTrace, RunStatus, ToolCallTrace, ToolEndTrace,
+    ToolExecutionHandoffTrace, ToolOutcomeTrace, ToolStartTrace, TurnStartTrace,
 };
 use crate::types::{AgentEvent, Content, InterruptInfo, Message, ParsedToolCall, ToolCallOutcome};
 
@@ -55,6 +56,31 @@ pub struct AgentLoop<M: ChatModel> {
 }
 
 impl<M: ChatModel> AgentLoop<M> {
+    fn outcome_trace(outcome: &ToolCallOutcome) -> ToolOutcomeTrace {
+        match outcome {
+            ToolCallOutcome::Result {
+                tool_call_id,
+                tool_name,
+                content,
+            } => ToolOutcomeTrace {
+                tool_call_id: tool_call_id.clone(),
+                tool_name: tool_name.clone(),
+                result: Some(content.text_content()),
+                error: None,
+            },
+            ToolCallOutcome::Error {
+                tool_call_id,
+                tool_name,
+                error,
+            } => ToolOutcomeTrace {
+                tool_call_id: tool_call_id.clone(),
+                tool_name: tool_name.clone(),
+                result: None,
+                error: Some(error.clone()),
+            },
+        }
+    }
+
     fn tool_definition_context(state: &AgentState) -> ToolDefinitionContext {
         ToolDefinitionContext {
             thread_id: Some(state.thread_id.clone()),
@@ -135,7 +161,8 @@ impl<M: ChatModel> AgentLoop<M> {
 
             let mut state = initial_state;
             let mut action = initial_action;
-            let mut turn = 1usize;
+            let mut turn = if state.turn == 0 { 1usize } else { state.turn };
+            state.turn = turn;
 
             // Monotonic checkpoint sequence counter
             #[allow(unused_assignments)]
@@ -531,6 +558,22 @@ impl<M: ChatModel> AgentLoop<M> {
 
                         // ── External tool calls: yield outward ────────
                         if !external_calls.is_empty() {
+                            if let Some(t) = tracer {
+                                t.on_tool_execution_handoff(&ToolExecutionHandoffTrace {
+                                    run_id: run_id.clone(),
+                                    turn,
+                                    tool_calls: external_calls.iter().map(|tc| ToolCallTrace {
+                                        id: tc.id.clone(),
+                                        name: tc.name.clone(),
+                                        arguments: tc.arguments.clone(),
+                                        result: None,
+                                        interrupted: false,
+                                        duration: std::time::Duration::ZERO,
+                                    }).collect(),
+                                    completed_results: outcomes.iter().map(Self::outcome_trace).collect(),
+                                    timestamp: chrono::Utc::now(),
+                                }).await;
+                            }
                             // Write back user_state before yielding
                             state.user_state = shared_user_state.read().unwrap().clone();
                             // ── Checkpoint: AwaitingToolExecution ──────
@@ -574,6 +617,7 @@ impl<M: ChatModel> AgentLoop<M> {
                         checkpoint_seq += 1;
 
                         turn += 1;
+                        state.turn = turn;
                         if let Some(t) = tracer {
                             t.on_turn_start(&TurnStartTrace {
                                 run_id: run_id.clone(),
@@ -643,15 +687,28 @@ impl<M: ChatModel> crate::agent::Agent for AgentLoop<M> {
                     Box::pin(self.run(state, action, true))
                 }
                 crate::types::LoopInput::Resume { state, results } => {
+                    let outcomes = results.iter().map(Self::outcome_trace).collect::<Vec<_>>();
                     // Emit on_resume before the stream starts so LangSmith
                     // (and any other tracer) can reactivate the run record.
                     if let Some(t) = self.tracer.as_deref() {
                         t.on_resume(&ResumeTrace {
                             run_id: state.run_id.clone(),
                             payloads_count: results.len(),
+                            outcomes: outcomes.clone(),
                             timestamp: chrono::Utc::now(),
                         })
                         .await;
+
+                        for outcome in &outcomes {
+                            t.on_external_tool_result(&ExternalToolResultTrace {
+                                run_id: state.run_id.clone(),
+                                tool_call_id: outcome.tool_call_id.clone(),
+                                tool_name: outcome.tool_name.clone(),
+                                result: outcome.result.clone(),
+                                error: outcome.error.clone(),
+                                timestamp: chrono::Utc::now(),
+                            }).await;
+                        }
                     }
                     Box::pin(self.run(state, Action::ToolResults(results), false))
                 }

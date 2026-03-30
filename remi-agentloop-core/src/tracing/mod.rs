@@ -98,6 +98,23 @@ pub struct ToolEndTrace {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct ToolOutcomeTrace {
+    pub tool_call_id: String,
+    pub tool_name: String,
+    pub result: Option<String>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ToolExecutionHandoffTrace {
+    pub run_id: RunId,
+    pub turn: usize,
+    pub tool_calls: Vec<ToolCallTrace>,
+    pub completed_results: Vec<ToolOutcomeTrace>,
+    pub timestamp: chrono::DateTime<chrono::Utc>,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct InterruptTrace {
     pub run_id: RunId,
     pub interrupts: Vec<InterruptInfo>,
@@ -108,6 +125,17 @@ pub struct InterruptTrace {
 pub struct ResumeTrace {
     pub run_id: RunId,
     pub payloads_count: usize,
+    pub outcomes: Vec<ToolOutcomeTrace>,
+    pub timestamp: chrono::DateTime<chrono::Utc>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ExternalToolResultTrace {
+    pub run_id: RunId,
+    pub tool_call_id: String,
+    pub tool_name: String,
+    pub result: Option<String>,
+    pub error: Option<String>,
     pub timestamp: chrono::DateTime<chrono::Utc>,
 }
 
@@ -128,6 +156,8 @@ pub trait Tracer {
     async fn on_model_end(&self, _event: &ModelEndTrace) {}
     async fn on_tool_start(&self, _event: &ToolStartTrace) {}
     async fn on_tool_end(&self, _event: &ToolEndTrace) {}
+    async fn on_tool_execution_handoff(&self, _event: &ToolExecutionHandoffTrace) {}
+    async fn on_external_tool_result(&self, _event: &ExternalToolResultTrace) {}
     async fn on_interrupt(&self, _event: &InterruptTrace) {}
     async fn on_resume(&self, _event: &ResumeTrace) {}
     async fn on_turn_start(&self, _event: &TurnStartTrace) {}
@@ -149,6 +179,8 @@ pub trait DynTracer: Send + Sync {
     fn on_model_end<'a>(&'a self, event: &'a ModelEndTrace) -> BoxFuture<'a>;
     fn on_tool_start<'a>(&'a self, event: &'a ToolStartTrace) -> BoxFuture<'a>;
     fn on_tool_end<'a>(&'a self, event: &'a ToolEndTrace) -> BoxFuture<'a>;
+    fn on_tool_execution_handoff<'a>(&'a self, event: &'a ToolExecutionHandoffTrace) -> BoxFuture<'a>;
+    fn on_external_tool_result<'a>(&'a self, event: &'a ExternalToolResultTrace) -> BoxFuture<'a>;
     fn on_interrupt<'a>(&'a self, event: &'a InterruptTrace) -> BoxFuture<'a>;
     fn on_resume<'a>(&'a self, event: &'a ResumeTrace) -> BoxFuture<'a>;
     fn on_turn_start<'a>(&'a self, event: &'a TurnStartTrace) -> BoxFuture<'a>;
@@ -174,6 +206,12 @@ impl<T: Tracer + Send + Sync> DynTracer for T {
     }
     fn on_tool_end<'a>(&'a self, event: &'a ToolEndTrace) -> BoxFuture<'a> {
         Box::pin(Tracer::on_tool_end(self, event))
+    }
+    fn on_tool_execution_handoff<'a>(&'a self, event: &'a ToolExecutionHandoffTrace) -> BoxFuture<'a> {
+        Box::pin(Tracer::on_tool_execution_handoff(self, event))
+    }
+    fn on_external_tool_result<'a>(&'a self, event: &'a ExternalToolResultTrace) -> BoxFuture<'a> {
+        Box::pin(Tracer::on_external_tool_result(self, event))
     }
     fn on_interrupt<'a>(&'a self, event: &'a InterruptTrace) -> BoxFuture<'a> {
         Box::pin(Tracer::on_interrupt(self, event))
@@ -250,6 +288,20 @@ impl DynTracer for CompositeTracer {
         Box::pin(async move {
             for t in &self.tracers {
                 t.on_tool_end(event).await;
+            }
+        })
+    }
+    fn on_tool_execution_handoff<'a>(&'a self, event: &'a ToolExecutionHandoffTrace) -> BoxFuture<'a> {
+        Box::pin(async move {
+            for t in &self.tracers {
+                t.on_tool_execution_handoff(event).await;
+            }
+        })
+    }
+    fn on_external_tool_result<'a>(&'a self, event: &'a ExternalToolResultTrace) -> BoxFuture<'a> {
+        Box::pin(async move {
+            for t in &self.tracers {
+                t.on_external_tool_result(event).await;
             }
         })
     }

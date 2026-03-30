@@ -514,6 +514,7 @@ impl<M: ChatModel, S: ContextStore, C: CheckpointStore> BuiltAgent<M, S, C> {
                     t.on_resume(&ResumeTrace {
                         run_id: cp.state.run_id.clone(),
                         payloads_count,
+                        outcomes: Vec::new(),
                         timestamp: chrono::Utc::now(),
                     })
                     .await;
@@ -705,6 +706,31 @@ impl<M: ChatModel, S: ContextStore, C: CheckpointStore> BuiltAgent<M, S, C> {
                     t.on_resume(&ResumeTrace {
                         run_id: state.run_id.clone(),
                         payloads_count,
+                        outcomes: outcomes
+                            .iter()
+                            .map(|outcome| match outcome {
+                                ToolCallOutcome::Result {
+                                    tool_call_id,
+                                    tool_name,
+                                    content,
+                                } => crate::tracing::ToolOutcomeTrace {
+                                    tool_call_id: tool_call_id.clone(),
+                                    tool_name: tool_name.clone(),
+                                    result: Some(content.text_content()),
+                                    error: None,
+                                },
+                                ToolCallOutcome::Error {
+                                    tool_call_id,
+                                    tool_name,
+                                    error,
+                                } => crate::tracing::ToolOutcomeTrace {
+                                    tool_call_id: tool_call_id.clone(),
+                                    tool_name: tool_name.clone(),
+                                    result: None,
+                                    error: Some(error.clone()),
+                                },
+                            })
+                            .collect(),
                         timestamp: chrono::Utc::now(),
                     })
                     .await;

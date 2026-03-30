@@ -28,12 +28,20 @@ impl Tracer for StdoutTracer {
         eprintln!("[tracer] tool_end   run_id={} tool={} interrupted={}", event.run_id, event.tool_name, event.interrupted);
         async {}
     }
+    fn on_tool_execution_handoff(&self, event: &ToolExecutionHandoffTrace) -> impl std::future::Future<Output = ()> {
+        eprintln!("[tracer] handoff    run_id={} turn={} external_calls={} completed_results={}", event.run_id, event.turn, event.tool_calls.len(), event.completed_results.len());
+        async {}
+    }
+    fn on_external_tool_result(&self, event: &ExternalToolResultTrace) -> impl std::future::Future<Output = ()> {
+        eprintln!("[tracer] ext_result run_id={} tool={} error={}", event.run_id, event.tool_name, event.error.is_some());
+        async {}
+    }
     fn on_interrupt(&self, event: &InterruptTrace) -> impl std::future::Future<Output = ()> {
         eprintln!("[tracer] interrupt  run_id={} count={}", event.run_id, event.interrupts.len());
         async {}
     }
     fn on_resume(&self, event: &ResumeTrace) -> impl std::future::Future<Output = ()> {
-        eprintln!("[tracer] resume     run_id={}", event.run_id);
+        eprintln!("[tracer] resume     run_id={} outcomes={}", event.run_id, event.outcomes.len());
         async {}
     }
     fn on_turn_start(&self, event: &TurnStartTrace) -> impl std::future::Future<Output = ()> {
