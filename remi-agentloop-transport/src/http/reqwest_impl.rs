@@ -57,7 +57,11 @@ impl HttpTransport for ReqwestTransport {
             let response = req
                 .send()
                 .await
-                .map_err(|e| HttpTransportError::new(e.to_string()))?;
+                .map_err(|e| {
+                    HttpTransportError::new(format!(
+                        "reqwest send failed url={url} error={e} debug={e:?}"
+                    ))
+                })?;
 
             let status = response.status().as_u16();
             let headers = response
@@ -70,11 +74,16 @@ impl HttpTransport for ReqwestTransport {
                         .map(|value| (name.as_str().to_string(), value.to_string()))
                 })
                 .collect();
+            let stream_url = url.clone();
 
-            let byte_stream = response.bytes_stream().map(|result| {
+            let byte_stream = response.bytes_stream().map(move |result| {
                 result
                     .map(|bytes| bytes.to_vec())
-                    .map_err(|e| HttpTransportError::new(e.to_string()))
+                    .map_err(|e| {
+                        HttpTransportError::new(format!(
+                            "reqwest stream read failed url={stream_url} error={e} debug={e:?}"
+                        ))
+                    })
             });
 
             Ok(HttpStreamingResponse {

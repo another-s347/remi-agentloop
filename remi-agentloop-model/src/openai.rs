@@ -231,8 +231,18 @@ impl<T: HttpTransport> Agent for OpenAIClient<T> {
                 include_usage: true,
             });
 
-            let body =
-                serde_json::to_vec(&req).map_err(|e| AgentError::model(e.to_string()))?;
+            let request_model = req.model.clone();
+            let request_base_url = self.base_url.clone();
+
+            let body = serde_json::to_vec(&req).map_err(|e| {
+                AgentError::model(format!(
+                    "failed to serialize chat request model={} base_url={} error={} debug={:?}",
+                    request_model,
+                    request_base_url,
+                    e,
+                    e
+                ))
+            })?;
 
             let headers = vec![
                 ("Authorization".into(), format!("Bearer {api_key}")),
@@ -244,7 +254,15 @@ impl<T: HttpTransport> Agent for OpenAIClient<T> {
                 let response = transport
                     .post_streaming(url.clone(), headers.clone(), body.clone())
                     .await
-                    .map_err(|e| AgentError::model(e.to_string()))?;
+                    .map_err(|e| {
+                        AgentError::model(format!(
+                            "streaming request failed model={} base_url={} detail={} debug={:?}",
+                            request_model,
+                            request_base_url,
+                            e,
+                            e
+                        ))
+                    })?;
 
                 if (200..300).contains(&response.status) {
                     break response;
@@ -267,7 +285,12 @@ impl<T: HttpTransport> Agent for OpenAIClient<T> {
                     }
                 }
 
-                return Err(model_http_error(status, &body_text, retries_used));
+                return Err(AgentError::model(format!(
+                    "{} model={} base_url={}",
+                    model_http_error(status, &body_text, retries_used),
+                    request_model,
+                    request_base_url
+                )));
             };
 
             // Parse SSE from the streaming body — transport-agnostic
