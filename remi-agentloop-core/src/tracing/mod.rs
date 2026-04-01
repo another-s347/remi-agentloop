@@ -46,6 +46,7 @@ pub enum RunStatus {
 pub struct ModelStartTrace {
     pub run_id: RunId,
     pub turn: usize,
+    pub call_index: usize,
     pub model: String,
     pub messages: Vec<Message>,
     pub tools: Vec<String>,
@@ -56,6 +57,7 @@ pub struct ModelStartTrace {
 pub struct ModelEndTrace {
     pub run_id: RunId,
     pub turn: usize,
+    pub call_index: usize,
     pub response_text: Option<String>,
     pub tool_calls: Vec<ToolCallTrace>,
     pub prompt_tokens: u32,

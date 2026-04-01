@@ -472,6 +472,7 @@ fn wit_state_to_rust(s: wit::AgentState) -> remi_agentloop::state::AgentState {
         thread_id: remi_agentloop::types::ThreadId(s.thread_id),
         run_id: remi_agentloop::types::RunId(s.run_id),
         turn: s.turn as usize,
+        model_call_seq: 0,
         phase: serde_json::from_str(&s.phase_json)
             .unwrap_or(remi_agentloop::state::AgentPhase::Error),
         user_state: serde_json::from_str(&s.user_state_json).unwrap_or(serde_json::Value::Null),

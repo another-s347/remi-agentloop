@@ -238,11 +238,14 @@ impl<M: ChatModel> AgentLoop<M> {
                 let tool_names: Vec<String> = state.tool_definitions.iter()
                     .map(|td| td.function.name.clone())
                     .collect();
+                let model_call_index = state.model_call_seq;
+                state.model_call_seq += 1;
 
                 if let Some(t) = tracer {
                     t.on_model_start(&ModelStartTrace {
                         run_id: run_id.clone(),
                         turn,
+                        call_index: model_call_index,
                         model: model_name.clone(),
                         messages: state.messages.clone(),
                         tools: tool_names,
@@ -299,6 +302,7 @@ impl<M: ChatModel> AgentLoop<M> {
                                 t.on_model_end(&ModelEndTrace {
                                     run_id: run_id.clone(),
                                     turn,
+                                    call_index: model_call_index,
                                     response_text: None,
                                     tool_calls: vec![],
                                     prompt_tokens: step_prompt_tokens,
@@ -349,6 +353,7 @@ impl<M: ChatModel> AgentLoop<M> {
                     t.on_model_end(&ModelEndTrace {
                         run_id: run_id.clone(),
                         turn,
+                        call_index: model_call_index,
                         response_text: if response_text.is_empty() { None } else { Some(response_text.clone()) },
                         tool_calls: tc_traces,
                         prompt_tokens: step_prompt_tokens,

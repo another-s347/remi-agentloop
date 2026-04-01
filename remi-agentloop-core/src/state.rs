@@ -104,6 +104,10 @@ pub struct AgentState {
     /// Current turn counter (incremented by the caller / outer loop).
     pub turn: usize,
 
+    /// Monotonic per-run model invocation sequence used by tracing/span IDs.
+    #[serde(default)]
+    pub model_call_seq: usize,
+
     /// Current phase — indicates what action the caller should take next.
     pub phase: AgentPhase,
 
@@ -123,6 +127,7 @@ impl AgentState {
             thread_id: ThreadId::new(),
             run_id: RunId::new(),
             turn: 0,
+            model_call_seq: 0,
             phase: AgentPhase::Ready,
             user_state: serde_json::Value::Null,
         }

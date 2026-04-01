@@ -18,7 +18,7 @@ use std::collections::HashMap;
 use std::future::Future;
 
 use serde::Serialize;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use uuid::Uuid;
 
 use crate::config::AgentConfig;
@@ -45,6 +45,10 @@ enum LangSmithMessage {
         patch: serde_json::Value,
         api_url: String,
         api_key: String,
+    },
+    Flush {
+        close: bool,
+        ack: oneshot::Sender<()>,
     },
 }
 
@@ -99,7 +103,8 @@ pub struct LangSmithTracer {
     api_key: String,
     api_url: String,
     project_name: String,
-    /// Channel sender — wrapped in Option so `flush()` can close it.
+    manage_root_run: bool,
+    /// Channel sender — wrapped in Option so terminal close can detach it.
     tx: std::sync::Mutex<Option<mpsc::UnboundedSender<LangSmithMessage>>>,
     /// Handle to the background sender task.
     handle: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
@@ -107,6 +112,35 @@ pub struct LangSmithTracer {
 }
 
 impl LangSmithTracer {
+    pub fn is_closed(&self) -> bool {
+        self.tx
+            .lock()
+            .ok()
+            .and_then(|guard| guard.as_ref().map(mpsc::UnboundedSender::is_closed))
+            .unwrap_or(true)
+    }
+
+    fn log_enqueue_error(operation: &str, target: &str, error: &str) {
+        eprintln!("[langsmith] failed to enqueue {operation} for {target}: {error}");
+    }
+
+    async fn log_http_failure(
+        operation: &str,
+        target: &str,
+        response: reqwest::Response,
+    ) {
+        let status = response.status();
+        let body = match response.text().await {
+            Ok(text) if !text.trim().is_empty() => text,
+            Ok(_) => "<empty body>".to_string(),
+            Err(error) => format!("<failed to read body: {error}>"),
+        };
+
+        eprintln!(
+            "[langsmith] {operation} failed for {target}: status={status}, body={body}"
+        );
+    }
+
     /// Create a new tracer.  Spawns a background Tokio task immediately.
     pub fn new(api_key: impl Into<String>) -> Self {
         let (tx, rx) = mpsc::unbounded_channel();
@@ -115,23 +149,66 @@ impl LangSmithTracer {
             api_key: api_key.into(),
             api_url: DEFAULT_API_URL.to_string(),
             project_name: "default".to_string(),
+            manage_root_run: true,
             tx: std::sync::Mutex::new(Some(tx)),
             handle: std::sync::Mutex::new(Some(handle)),
             custom_event_counters: std::sync::Mutex::new(HashMap::new()),
         }
     }
 
-    /// Close the send channel and await the background sender, ensuring all
-    /// pending HTTP calls (POST/PATCH) reach LangSmith before returning.
+    /// Reattach beneath an already-existing root run without creating or patching it.
+    pub fn attach_to_existing_run(mut self) -> Self {
+        self.manage_root_run = false;
+        self
+    }
+
+    async fn send_flush_signal(&self, close: bool) {
+        let (ack_tx, ack_rx) = oneshot::channel();
+        let send_result = if let Ok(guard) = self.tx.lock() {
+            if let Some(tx) = guard.as_ref() {
+                tx.send(LangSmithMessage::Flush { close, ack: ack_tx })
+                    .map_err(|error| error.to_string())
+            } else {
+                Err("sender channel already closed".to_string())
+            }
+        } else {
+            Err("sender mutex poisoned".to_string())
+        };
+
+        if let Err(error) = send_result {
+            Self::log_enqueue_error(
+                if close { "flush(close)" } else { "flush" },
+                "tracer queue",
+                &error,
+            );
+            return;
+        }
+
+        if ack_rx.await.is_err() {
+            eprintln!(
+                "[langsmith] background sender dropped before acknowledging {}",
+                if close { "close" } else { "flush" }
+            );
+        }
+    }
+
+    /// Wait for all currently queued HTTP calls to finish, without closing the tracer.
     ///
-    /// Call this after the agent stream is exhausted, **before** the Tokio
-    /// runtime is dropped.
+    /// This is safe to call between interrupted/resumed turns.
     pub async fn flush(&self) {
-        // Closing the Sender tells background_sender to drain then exit.
+        self.send_flush_signal(false).await;
+    }
+
+    /// Flush pending work and permanently close the background sender.
+    ///
+    /// Call this only when the run is terminal and no further trace events will be emitted.
+    pub async fn close(&self) {
+        self.send_flush_signal(true).await;
+
         if let Ok(mut guard) = self.tx.lock() {
             let _ = guard.take();
         }
-        // Wait for the background task to finish.
+
         let handle = self.handle.lock().ok().and_then(|mut g| g.take());
         if let Some(h) = handle {
             let _ = h.await;
@@ -183,38 +260,135 @@ impl LangSmithTracer {
     // ── Private helpers ───────────────────────────────────────────────────────
 
     fn post(&self, run: LangSmithRun) {
+        let target = format!("run {} ({})", run.id, run.name);
         if let Ok(guard) = self.tx.lock() {
             if let Some(tx) = guard.as_ref() {
-                let _ = tx.send(LangSmithMessage::Post {
+                if let Err(error) = tx.send(LangSmithMessage::Post {
                     run,
                     api_url: self.api_url.clone(),
                     api_key: self.api_key.clone(),
-                });
+                }) {
+                    Self::log_enqueue_error("POST /runs", &target, &error.to_string());
+                }
+            } else {
+                Self::log_enqueue_error(
+                    "POST /runs",
+                    &target,
+                    "sender channel already closed",
+                );
             }
+        } else {
+            Self::log_enqueue_error("POST /runs", &target, "sender mutex poisoned");
         }
     }
 
     fn patch(&self, id: impl Into<String>, patch: serde_json::Value) {
+        let id = id.into();
+        let target = format!("run {id}");
         if let Ok(guard) = self.tx.lock() {
             if let Some(tx) = guard.as_ref() {
-                let _ = tx.send(LangSmithMessage::Patch {
-                    id: id.into(),
+                if let Err(error) = tx.send(LangSmithMessage::Patch {
+                    id,
                     patch,
                     api_url: self.api_url.clone(),
                     api_key: self.api_key.clone(),
-                });
+                }) {
+                    Self::log_enqueue_error("PATCH /runs/{id}", &target, &error.to_string());
+                }
+            } else {
+                Self::log_enqueue_error(
+                    "PATCH /runs/{id}",
+                    &target,
+                    "sender channel already closed",
+                );
             }
+        } else {
+            Self::log_enqueue_error("PATCH /runs/{id}", &target, "sender mutex poisoned");
         }
     }
 
-    /// Derive a deterministic UUID for an LLM child run.
-    ///
-    /// Uses UUID v5 (namespace = parent run UUID, name = `"llm:<turn>"`) so
-    /// `on_model_start` and `on_model_end` always produce the same child ID
-    /// for the same run + turn without any shared mutable state.
-    fn llm_run_id(run_id: &crate::types::RunId, turn: usize) -> String {
+    fn llm_run_id(run_id: &crate::types::RunId, index: usize) -> String {
         let ns = Uuid::parse_str(&run_id.0).unwrap_or_else(|_| Uuid::nil());
-        Uuid::new_v5(&ns, format!("llm:{turn}").as_bytes()).to_string()
+        Uuid::new_v5(&ns, format!("llm:{index}").as_bytes()).to_string()
+    }
+
+    fn clear_run_state(&self, run_id: &crate::types::RunId) {
+        if let Ok(mut guard) = self.custom_event_counters.lock() {
+            guard.remove(&run_id.0);
+        }
+    }
+
+    fn llm_output_tool_calls(
+        tool_calls: &[crate::tracing::ToolCallTrace],
+    ) -> Vec<serde_json::Value> {
+        tool_calls
+            .iter()
+            .map(|tool_call| {
+                serde_json::json!({
+                    "id": tool_call.id,
+                    "type": "function",
+                    "function": {
+                        "name": tool_call.name,
+                        "arguments": serde_json::to_string(&tool_call.arguments)
+                            .unwrap_or_else(|_| "{}".to_string()),
+                    },
+                })
+            })
+            .collect()
+    }
+
+    fn post_tool_run(
+        &self,
+        run_id: &crate::types::RunId,
+        tool_call_id: &str,
+        tool_name: &str,
+        arguments: &serde_json::Value,
+        timestamp: chrono::DateTime<chrono::Utc>,
+    ) {
+        let tool_id = Self::tool_run_id(run_id, tool_call_id);
+        self.post(LangSmithRun {
+            id: tool_id,
+            parent_run_id: Some(run_id.0.clone()),
+            run_type: "tool".to_string(),
+            name: tool_name.to_string(),
+            inputs: serde_json::json!({
+                "arguments": arguments,
+            }),
+            outputs: None,
+            start_time: timestamp.to_rfc3339(),
+            end_time: None,
+            extra: None,
+            session_name: self.project_name.clone(),
+            status: None,
+            error: None,
+            metadata: None,
+            usage_metadata: None,
+        });
+    }
+
+    fn patch_tool_run(
+        &self,
+        run_id: &crate::types::RunId,
+        tool_call_id: &str,
+        result: Option<&str>,
+        interrupted: bool,
+        error: Option<&str>,
+        timestamp: chrono::DateTime<chrono::Utc>,
+    ) {
+        let tool_id = Self::tool_run_id(run_id, tool_call_id);
+        let status = if error.is_some() { "error" } else { "success" };
+        self.patch(
+            tool_id,
+            serde_json::json!({
+                "outputs": {
+                    "result": result,
+                    "interrupted": interrupted,
+                },
+                "end_time": timestamp.to_rfc3339(),
+                "status": status,
+                "error": error,
+            }),
+        );
     }
 
     /// Uses UUID v5 (namespace = parent run UUID, name = `"tool:<tool_call_id>"`) to
@@ -253,14 +427,22 @@ impl LangSmithTracer {
                     api_key,
                 } => {
                     let url = format!("{api_url}/runs");
-                    if let Err(e) = client
+                    let target = format!("run {} ({})", run.id, run.name);
+                    match client
                         .post(&url)
                         .header("x-api-key", &api_key)
                         .json(&run)
                         .send()
                         .await
                     {
-                        eprintln!("[langsmith] POST /runs error: {e}");
+                        Ok(response) => {
+                            if !response.status().is_success() {
+                                Self::log_http_failure("POST /runs", &target, response).await;
+                            }
+                        }
+                        Err(error) => {
+                            eprintln!("[langsmith] POST /runs transport error for {target}: {error}");
+                        }
                     }
                 }
                 LangSmithMessage::Patch {
@@ -270,14 +452,28 @@ impl LangSmithTracer {
                     api_key,
                 } => {
                     let url = format!("{api_url}/runs/{id}");
-                    if let Err(e) = client
+                    let target = format!("run {id}");
+                    match client
                         .patch(&url)
                         .header("x-api-key", &api_key)
                         .json(&patch)
                         .send()
                         .await
                     {
-                        eprintln!("[langsmith] PATCH /runs/{id} error: {e}");
+                        Ok(response) => {
+                            if !response.status().is_success() {
+                                Self::log_http_failure("PATCH /runs/{id}", &target, response).await;
+                            }
+                        }
+                        Err(error) => {
+                            eprintln!("[langsmith] PATCH /runs/{id} transport error for {target}: {error}");
+                        }
+                    }
+                }
+                LangSmithMessage::Flush { close, ack } => {
+                    let _ = ack.send(());
+                    if close {
+                        break;
                     }
                 }
             }
@@ -290,64 +486,73 @@ impl LangSmithTracer {
 impl Tracer for LangSmithTracer {
     /// POST a new Chain Run representing the full AgentLoop execution.
     fn on_run_start(&self, event: &RunStartTrace) -> impl Future<Output = ()> {
-        self.post(LangSmithRun {
-            id: event.run_id.0.clone(),
-            parent_run_id: None,
-            run_type: "chain".to_string(),
-            name: "AgentLoop".to_string(),
-            inputs: serde_json::json!({
-                "messages": event.input_messages,
-                "model": event.model,
-            }),
-            outputs: None,
-            start_time: event.timestamp.to_rfc3339(),
-            end_time: None,
-            extra: Some(serde_json::json!({
-                "system_prompt": event.system_prompt,
-                "thread_id": event.thread_id,
-            })),
-            session_name: self.project_name.clone(),
-            status: None,
-            error: None,
-            metadata: event.metadata.clone(),
-            usage_metadata: None,
-        });
-        async {}
+        async move {
+            if !self.manage_root_run {
+                return;
+            }
+            self.post(LangSmithRun {
+                id: event.run_id.0.clone(),
+                parent_run_id: None,
+                run_type: "chain".to_string(),
+                name: "AgentLoop".to_string(),
+                inputs: serde_json::json!({
+                    "messages": event.input_messages,
+                    "model": event.model,
+                }),
+                outputs: None,
+                start_time: event.timestamp.to_rfc3339(),
+                end_time: None,
+                extra: Some(serde_json::json!({
+                    "system_prompt": event.system_prompt,
+                    "thread_id": event.thread_id,
+                })),
+                session_name: self.project_name.clone(),
+                status: None,
+                error: None,
+                metadata: event.metadata.clone(),
+                usage_metadata: None,
+            });
+        }
     }
 
     /// PATCH the Chain Run with final outputs, status, and token usage.
     fn on_run_end(&self, event: &RunEndTrace) -> impl Future<Output = ()> {
-        let status = match &event.status {
-            RunStatus::Completed => "success",
-            RunStatus::Error | RunStatus::MaxTurnsExceeded => "error",
-            // Interrupted = paused, not truly ended; see also on_resume.
-            RunStatus::Interrupted => "interrupted",
-        };
-        self.patch(
-            event.run_id.0.clone(),
-            serde_json::json!({
-                "outputs": {
-                    "messages": event.output_messages,
-                },
-                "end_time": event.timestamp.to_rfc3339(),
-                "status": status,
-                "error": event.error,
-                "usage_metadata": {
-                    "prompt_tokens": event.total_prompt_tokens,
-                    "completion_tokens": event.total_completion_tokens,
-                    "total_tokens":
-                        event.total_prompt_tokens + event.total_completion_tokens,
-                },
-            }),
-        );
-        async {}
+        async move {
+            if !self.manage_root_run {
+                self.clear_run_state(&event.run_id);
+                return;
+            }
+            self.clear_run_state(&event.run_id);
+            let status = match &event.status {
+                RunStatus::Completed => "success",
+                RunStatus::Error | RunStatus::MaxTurnsExceeded => "error",
+                RunStatus::Interrupted => "interrupted",
+            };
+            self.patch(
+                event.run_id.0.clone(),
+                serde_json::json!({
+                    "outputs": {
+                        "messages": event.output_messages,
+                    },
+                    "end_time": event.timestamp.to_rfc3339(),
+                    "status": status,
+                    "error": event.error,
+                    "usage_metadata": {
+                        "prompt_tokens": event.total_prompt_tokens,
+                        "completion_tokens": event.total_completion_tokens,
+                        "total_tokens":
+                            event.total_prompt_tokens + event.total_completion_tokens,
+                    },
+                }),
+            );
+        }
     }
 
     /// POST a new LLM child run.  The UUID is derived deterministically from
-    /// `run_id + turn` via UUID v5 so `on_model_start` / `on_model_end` always
-    /// agree on the same ID without shared state.
+    /// a per-run monotonic model invocation counter persisted in AgentState so
+    /// repeated model calls across resume still get distinct spans.
     fn on_model_start(&self, event: &ModelStartTrace) -> impl Future<Output = ()> {
-        let llm_id = Self::llm_run_id(&event.run_id, event.turn);
+        let llm_id = Self::llm_run_id(&event.run_id, event.call_index);
         self.post(LangSmithRun {
             id: llm_id,
             parent_run_id: Some(event.run_id.0.clone()),
@@ -372,13 +577,39 @@ impl Tracer for LangSmithTracer {
 
     /// PATCH the LLM child run with its outputs and token usage.
     fn on_model_end(&self, event: &ModelEndTrace) -> impl Future<Output = ()> {
-        let llm_id = Self::llm_run_id(&event.run_id, event.turn);
+        let llm_id = Self::llm_run_id(&event.run_id, event.call_index);
+        let response_text = event.response_text.clone().unwrap_or_default();
+        let finish_reason = if event.tool_calls.is_empty() {
+            "stop"
+        } else {
+            "tool_calls"
+        };
+        let output_tool_calls = Self::llm_output_tool_calls(&event.tool_calls);
+        let assistant_message = serde_json::json!({
+            "role": "assistant",
+            "content": response_text.clone(),
+            "tool_calls": output_tool_calls.clone(),
+        });
+        let generations_message = assistant_message.clone();
+        let output_message = assistant_message.clone();
+        let messages = vec![assistant_message.clone()];
         self.patch(
             llm_id,
             serde_json::json!({
                 "outputs": {
-                    "response": event.response_text,
-                    "tool_calls": event.tool_calls,
+                    "response": event.response_text.clone(),
+                    "text": response_text.clone(),
+                    "output": output_message,
+                    "messages": messages,
+                    "tool_calls": output_tool_calls.clone(),
+                    "message": assistant_message,
+                    "generations": [{
+                        "text": response_text,
+                        "message": generations_message,
+                        "generation_info": {
+                            "finish_reason": finish_reason,
+                        },
+                    }],
                 },
                 "end_time": event.timestamp.to_rfc3339(),
                 "status": "success",
@@ -396,47 +627,25 @@ impl Tracer for LangSmithTracer {
     /// `run_id + tool_call_id` so that the raw OpenAI `call_abc123` format
     /// is converted to a valid UUID that LangSmith accepts.
     fn on_tool_start(&self, event: &ToolStartTrace) -> impl Future<Output = ()> {
-        let tool_id = Self::tool_run_id(&event.run_id, &event.tool_call_id);
-        self.post(LangSmithRun {
-            id: tool_id,
-            parent_run_id: Some(event.run_id.0.clone()),
-            run_type: "tool".to_string(),
-            name: event.tool_name.clone(),
-            inputs: serde_json::json!({
-                "arguments": event.arguments,
-            }),
-            outputs: None,
-            start_time: event.timestamp.to_rfc3339(),
-            end_time: None,
-            extra: None,
-            session_name: self.project_name.clone(),
-            status: None,
-            error: None,
-            metadata: None,
-            usage_metadata: None,
-        });
+        self.post_tool_run(
+            &event.run_id,
+            &event.tool_call_id,
+            &event.tool_name,
+            &event.arguments,
+            event.timestamp,
+        );
         async {}
     }
 
     /// PATCH the Tool child run with its result, status, and any error.
     fn on_tool_end(&self, event: &ToolEndTrace) -> impl Future<Output = ()> {
-        let tool_id = Self::tool_run_id(&event.run_id, &event.tool_call_id);
-        let status = if event.error.is_some() {
-            "error"
-        } else {
-            "success"
-        };
-        self.patch(
-            tool_id,
-            serde_json::json!({
-                "outputs": {
-                    "result": event.result,
-                    "interrupted": event.interrupted,
-                },
-                "end_time": event.timestamp.to_rfc3339(),
-                "status": status,
-                "error": event.error,
-            }),
+        self.patch_tool_run(
+            &event.run_id,
+            &event.tool_call_id,
+            event.result.as_deref(),
+            event.interrupted,
+            event.error.as_deref(),
+            event.timestamp,
         );
         async {}
     }
@@ -446,16 +655,20 @@ impl Tracer for LangSmithTracer {
     /// The run is **not** ended here — `on_run_end(Interrupted)` follows
     /// shortly to update `status` and `end_time`.
     fn on_interrupt(&self, event: &InterruptTrace) -> impl Future<Output = ()> {
-        self.patch(
-            event.run_id.0.clone(),
-            serde_json::json!({
-                "extra": {
-                    "interrupts": event.interrupts,
-                    "interrupt_time": event.timestamp.to_rfc3339(),
-                },
-            }),
-        );
-        async {}
+        async move {
+            if !self.manage_root_run {
+                return;
+            }
+            self.patch(
+                event.run_id.0.clone(),
+                serde_json::json!({
+                    "extra": {
+                        "interrupts": event.interrupts,
+                        "interrupt_time": event.timestamp.to_rfc3339(),
+                    },
+                }),
+            );
+        }
     }
 
     /// PATCH the Chain Run to signal that execution is continuing.
@@ -463,49 +676,48 @@ impl Tracer for LangSmithTracer {
     /// Clears `end_time` and `status` so LangSmith shows the run as
     /// still in-progress, and records `resume_time` in `extra`.
     fn on_resume(&self, event: &ResumeTrace) -> impl Future<Output = ()> {
-        self.patch(
-            event.run_id.0.clone(),
-            serde_json::json!({
-                "extra": {
-                    "resume_time": event.timestamp.to_rfc3339(),
-                    "resume_payloads_count": event.payloads_count,
-                    "resume_outcomes": event.outcomes,
-                },
-                // Null clears these fields — signals the run is active again.
-                "end_time": serde_json::Value::Null,
-                "status": serde_json::Value::Null,
-            }),
-        );
-        async {}
+        async move {
+            if !self.manage_root_run {
+                return;
+            }
+            self.patch(
+                event.run_id.0.clone(),
+                serde_json::json!({
+                    "extra": {
+                        "resume_time": event.timestamp.to_rfc3339(),
+                        "resume_payloads_count": event.payloads_count,
+                        "resume_outcomes": event.outcomes,
+                    },
+                    "end_time": serde_json::Value::Null,
+                    "status": serde_json::Value::Null,
+                }),
+            );
+        }
     }
 
     fn on_tool_execution_handoff(&self, event: &ToolExecutionHandoffTrace) -> impl Future<Output = ()> {
-        let data = serde_json::json!({
-            "run_id": event.run_id.0,
-            "turn": event.turn,
-            "tool_calls": event.tool_calls,
-            "completed_results": event.completed_results,
-            "timestamp": event.timestamp,
-        });
-
-        async move {
-            self.on_custom("tool_execution_handoff", &data).await;
+        for tool_call in &event.tool_calls {
+            self.post_tool_run(
+                &event.run_id,
+                &tool_call.id,
+                &tool_call.name,
+                &tool_call.arguments,
+                event.timestamp,
+            );
         }
+        async {}
     }
 
     fn on_external_tool_result(&self, event: &ExternalToolResultTrace) -> impl Future<Output = ()> {
-        let data = serde_json::json!({
-            "run_id": event.run_id.0,
-            "tool_call_id": event.tool_call_id,
-            "tool_name": event.tool_name,
-            "result": event.result,
-            "error": event.error,
-            "timestamp": event.timestamp,
-        });
-
-        async move {
-            self.on_custom("external_tool_result", &data).await;
-        }
+        self.patch_tool_run(
+            &event.run_id,
+            &event.tool_call_id,
+            event.result.as_deref(),
+            false,
+            event.error.as_deref(),
+            event.timestamp,
+        );
+        async {}
     }
 
     /// No-op: turns are implicit in the LangSmith run tree via the sequence
@@ -549,8 +761,7 @@ impl Tracer for LangSmithTracer {
         async {}
     }
 
-    /// Flush: close the mpsc channel then await the background sender task so
-    /// all pending HTTP POSTs / PATCHes are sent before the runtime shuts down.
+    /// Flush currently queued tracing work without closing the tracer.
     fn on_flush(&self) -> impl Future<Output = ()> {
         LangSmithTracer::flush(self)
     }

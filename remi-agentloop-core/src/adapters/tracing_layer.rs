@@ -139,6 +139,7 @@ where
                 let run_start_time = Instant::now();
                 let mut run_id = initial_run_id;
                 let mut turn = 1usize;
+                let mut model_call_seq = 0usize;
                 let mut total_prompt_tokens = 0u32;
                 let mut total_completion_tokens = 0u32;
 
@@ -171,6 +172,7 @@ where
                             self.tracer.on_model_end(&ModelEndTrace {
                                 run_id: run_id.clone(),
                                 turn,
+                                call_index: model_call_seq,
                                 response_text: None,
                                 tool_calls: vec![],
                                 prompt_tokens: *prompt_tokens,
@@ -178,6 +180,7 @@ where
                                 duration: run_start_time.elapsed(),
                                 timestamp: chrono::Utc::now(),
                             }).await;
+                            model_call_seq += 1;
                         }
                         AgentEvent::Done => {
                             self.tracer.on_run_end(&RunEndTrace {
