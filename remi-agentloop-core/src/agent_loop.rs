@@ -492,6 +492,12 @@ impl<M: ChatModel> AgentLoop<M> {
                                                         delta,
                                                     };
                                                 }
+                                                ToolOutput::SubSession(mut event) => {
+                                                    if event.parent_tool_call_id.is_empty() {
+                                                        event.parent_tool_call_id = tool_call_id.clone();
+                                                    }
+                                                    yield AgentEvent::SubSession(event);
+                                                }
                                                 ToolOutput::Result(content) => {
                                                     yield AgentEvent::ToolResult {
                                                         id: tool_call_id.clone(),

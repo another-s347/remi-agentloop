@@ -308,8 +308,12 @@ impl LangSmithTracer {
     }
 
     fn llm_run_id(run_id: &crate::types::RunId, index: usize) -> String {
-        let ns = Uuid::parse_str(&run_id.0).unwrap_or_else(|_| Uuid::nil());
-        Uuid::new_v5(&ns, format!("llm:{index}").as_bytes()).to_string()
+        Self::namespaced_uuid(&run_id.0, &format!("llm:{index}"))
+    }
+
+    fn namespaced_uuid(namespace: &str, name: &str) -> String {
+        let ns = Uuid::parse_str(namespace).unwrap_or_else(|_| Uuid::nil());
+        Uuid::new_v5(&ns, name.as_bytes()).to_string()
     }
 
     fn clear_run_state(&self, run_id: &crate::types::RunId) {
@@ -394,8 +398,7 @@ impl LangSmithTracer {
     /// Uses UUID v5 (namespace = parent run UUID, name = `"tool:<tool_call_id>"`) to
     /// convert the OpenAI `call_abc123` format into a valid UUID that LangSmith accepts.
     fn tool_run_id(run_id: &crate::types::RunId, tool_call_id: &str) -> String {
-        let ns = Uuid::parse_str(&run_id.0).unwrap_or_else(|_| Uuid::nil());
-        Uuid::new_v5(&ns, format!("tool:{tool_call_id}").as_bytes()).to_string()
+        Self::namespaced_uuid(&run_id.0, &format!("tool:{tool_call_id}"))
     }
 
     fn next_custom_event_index(&self, run_id: &str) -> usize {
@@ -411,9 +414,128 @@ impl LangSmithTracer {
             .unwrap_or(0)
     }
 
-    fn custom_run_id(run_id: &crate::types::RunId, name: &str, index: usize) -> String {
-        let ns = Uuid::parse_str(&run_id.0).unwrap_or_else(|_| Uuid::nil());
-        Uuid::new_v5(&ns, format!("custom:{name}:{index}").as_bytes()).to_string()
+    pub fn clear_custom_event_state(&self, run_id: &str) {
+        if let Ok(mut guard) = self.custom_event_counters.lock() {
+            guard.remove(run_id);
+        }
+    }
+
+    pub fn post_child_run(
+        &self,
+        parent_run_id: &str,
+        run_id: &str,
+        name: &str,
+        inputs: serde_json::Value,
+        extra: Option<serde_json::Value>,
+        metadata: Option<serde_json::Value>,
+        timestamp: chrono::DateTime<chrono::Utc>,
+    ) {
+        self.post(LangSmithRun {
+            id: run_id.to_string(),
+            parent_run_id: Some(parent_run_id.to_string()),
+            run_type: "chain".to_string(),
+            name: name.to_string(),
+            inputs,
+            outputs: None,
+            start_time: timestamp.to_rfc3339(),
+            end_time: None,
+            extra,
+            session_name: self.project_name.clone(),
+            status: None,
+            error: None,
+            metadata,
+            usage_metadata: None,
+        });
+    }
+
+    pub fn patch_run_outputs(
+        &self,
+        run_id: &str,
+        outputs: serde_json::Value,
+        status: &str,
+        error: Option<&str>,
+        timestamp: chrono::DateTime<chrono::Utc>,
+    ) {
+        self.patch(
+            run_id.to_string(),
+            serde_json::json!({
+                "outputs": outputs,
+                "end_time": timestamp.to_rfc3339(),
+                "status": status,
+                "error": error,
+            }),
+        );
+    }
+
+    pub fn post_tool_run_under_parent(
+        &self,
+        parent_run_id: &str,
+        tool_call_id: &str,
+        tool_name: &str,
+        arguments: &serde_json::Value,
+        timestamp: chrono::DateTime<chrono::Utc>,
+    ) {
+        let parent = crate::types::RunId(parent_run_id.to_string());
+        self.post_tool_run(&parent, tool_call_id, tool_name, arguments, timestamp);
+    }
+
+    pub fn patch_tool_run_under_parent(
+        &self,
+        parent_run_id: &str,
+        tool_call_id: &str,
+        result: Option<&str>,
+        interrupted: bool,
+        error: Option<&str>,
+        timestamp: chrono::DateTime<chrono::Utc>,
+        arguments: Option<&serde_json::Value>,
+    ) {
+        let parent = crate::types::RunId(parent_run_id.to_string());
+        let tool_id = Self::tool_run_id(&parent, tool_call_id);
+        let status = if error.is_some() { "error" } else { "success" };
+        self.patch(
+            tool_id,
+            serde_json::json!({
+                "inputs": arguments.map(|value| serde_json::json!({ "arguments": value })),
+                "outputs": {
+                    "result": result,
+                    "interrupted": interrupted,
+                },
+                "end_time": timestamp.to_rfc3339(),
+                "status": status,
+                "error": error,
+            }),
+        );
+    }
+
+    pub fn emit_custom_under(
+        &self,
+        parent_run_id: &str,
+        name: &str,
+        data: &serde_json::Value,
+    ) {
+        let index = self.next_custom_event_index(parent_run_id);
+        let custom_id = Self::namespaced_uuid(parent_run_id, &format!("custom:{name}:{index}"));
+        let timestamp = chrono::Utc::now().to_rfc3339();
+        self.post(LangSmithRun {
+            id: custom_id,
+            parent_run_id: Some(parent_run_id.to_string()),
+            run_type: "chain".to_string(),
+            name: format!("custom:{name}"),
+            inputs: data.clone(),
+            outputs: Some(serde_json::json!({
+                "custom_event": name,
+            })),
+            start_time: timestamp.clone(),
+            end_time: Some(timestamp),
+            extra: Some(serde_json::json!({
+                "custom_event_name": name,
+            })),
+            session_name: self.project_name.clone(),
+            status: Some("success".to_string()),
+            error: None,
+            metadata: None,
+            usage_metadata: None,
+        });
     }
 
     /// Background task: drains the mpsc channel and performs HTTP calls.
@@ -733,29 +855,7 @@ impl Tracer for LangSmithTracer {
             .map(|value| crate::types::RunId(value.to_string()));
 
         if let Some(run_id) = run_id {
-            let index = self.next_custom_event_index(&run_id.0);
-            let custom_id = Self::custom_run_id(&run_id, name, index);
-            let timestamp = chrono::Utc::now().to_rfc3339();
-            self.post(LangSmithRun {
-                id: custom_id,
-                parent_run_id: Some(run_id.0),
-                run_type: "chain".to_string(),
-                name: format!("custom:{name}"),
-                inputs: data.clone(),
-                outputs: Some(serde_json::json!({
-                    "custom_event": name,
-                })),
-                start_time: timestamp.clone(),
-                end_time: Some(timestamp),
-                extra: Some(serde_json::json!({
-                    "custom_event_name": name,
-                })),
-                session_name: self.project_name.clone(),
-                status: Some("success".to_string()),
-                error: None,
-                metadata: None,
-                usage_metadata: None,
-            });
+            self.emit_custom_under(&run_id.0, name, data);
         }
 
         async {}

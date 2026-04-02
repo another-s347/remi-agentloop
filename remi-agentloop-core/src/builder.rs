@@ -5,16 +5,19 @@ use std::pin::Pin;
 
 use crate::agent::Agent;
 use crate::agent_loop::AgentLoop;
-use crate::checkpoint::{CheckpointStore, NoCheckpointStore};
+use crate::checkpoint::{CheckpointStatus, CheckpointStore, NoCheckpointStore};
 use crate::config::AgentConfig;
 use crate::context::{ContextStore, NoStore};
 use crate::error::AgentError;
 use crate::model::ChatModel;
-use crate::state::Action;
+use crate::state::{Action, AgentPhase};
 use crate::tool::registry::{DefaultToolRegistry, ToolRegistry};
 use crate::tool::Tool;
 use crate::tracing::{DynTracer, ResumeTrace, Tracer};
-use crate::types::{AgentEvent, ChatInput, Content, Message, Role, ThreadId, ToolCallOutcome};
+use crate::types::{
+    AgentEvent, ChatInput, ChatReplayCursor, ChatSessionBundle, Content, Message, MessageId,
+    Role, ThreadId, ToolCallOutcome,
+};
 
 // ── Typestate markers ─────────────────────────────────────────────────────────
 
@@ -524,11 +527,153 @@ impl<M: ChatModel, S: ContextStore, C: CheckpointStore> BuiltAgent<M, S, C> {
         }
     }
 
+    /// Export the latest checkpoint-backed session bundle for a thread.
+    pub async fn export_thread_bundle(
+        &self,
+        thread_id: &ThreadId,
+    ) -> Result<Option<ChatSessionBundle>, AgentError> {
+        let checkpoint = self
+            .checkpoint_store
+            .load_latest_by_thread(thread_id)
+            .await?;
+        let Some(checkpoint) = checkpoint else {
+            return Ok(None);
+        };
+
+        let checkpoints = self
+            .checkpoint_store
+            .list_by_run(&checkpoint.run_id)
+            .await?;
+
+        Ok(Some(ChatSessionBundle::new(checkpoint.state).with_checkpoints(checkpoints)))
+    }
+
+    /// Start a replay from a specific historical message on a forked thread.
+    ///
+    /// This creates a new thread containing copied history up to the selected
+    /// message, loads the latest replay-safe checkpoint state for the source
+    /// thread, truncates the state history, and starts a fresh run.
+    pub async fn replay_from_message(
+        &self,
+        thread_id: &ThreadId,
+        up_to_message: &MessageId,
+    ) -> Result<Option<(ThreadId, Pin<Box<dyn Stream<Item = AgentEvent> + '_>>)>, AgentError> {
+        let messages = self.store.get_messages(thread_id).await?;
+        let replay_index = messages
+            .iter()
+            .position(|message| message.id == *up_to_message)
+            .ok_or_else(|| AgentError::MessageNotFound(up_to_message.clone()))?;
+        self.replay_from_message_index(thread_id, replay_index).await
+    }
+
+    /// Start a replay from a specific historical message index on a forked thread.
+    pub async fn replay_from_message_index(
+        &self,
+        thread_id: &ThreadId,
+        replay_index: usize,
+    ) -> Result<Option<(ThreadId, Pin<Box<dyn Stream<Item = AgentEvent> + '_>>)>, AgentError> {
+        let checkpoint = self
+            .checkpoint_store
+            .load_latest_by_thread(thread_id)
+            .await?;
+        let Some(checkpoint) = checkpoint else {
+            return Ok(None);
+        };
+        if !checkpoint.is_replayable() {
+            return Err(AgentError::ReplayFromCheckpointNotAllowed {
+                status: checkpoint_status_name(&checkpoint.status).to_string(),
+            });
+        }
+
+        let source_run_id = checkpoint.run_id.clone();
+        let source_messages = self.store.get_messages(thread_id).await?;
+        if replay_index >= source_messages.len() {
+            return Err(AgentError::ReplayIndexOutOfBounds {
+                thread_id: thread_id.clone(),
+                requested: replay_index,
+                available: source_messages.len(),
+            });
+        }
+
+        let new_thread = self.store.create_thread().await?;
+        let mut replay_state = checkpoint.state;
+        replay_state.messages = source_messages[..=replay_index]
+            .iter()
+            .cloned()
+            .map(|message| Message {
+                id: MessageId::new(),
+                ..message
+            })
+            .collect();
+        replay_state.thread_id = new_thread.clone();
+        replay_state.run_id = self.store.create_run(&new_thread).await?;
+        replay_state.turn = 0;
+        replay_state.model_call_seq = 0;
+        replay_state.phase = AgentPhase::Ready;
+        replay_state.system_prompt = None;
+
+        let cursor = ChatReplayCursor {
+            start_message_index: replay_index,
+            start_message_id: replay_state.messages.last().map(|message| message.id.clone()),
+        };
+        annotate_replay_state(&mut replay_state, thread_id, &source_run_id, cursor);
+
+        Ok(Some((
+            new_thread,
+            Box::pin(self.run_loop(
+                replay_state,
+                Action::ToolResults(vec![]),
+                false,
+            )),
+        )))
+    }
+
     /// Flush any buffered tracing I/O (e.g. pending LangSmith HTTP calls).
     /// Call this after the agent event stream has been fully consumed.
     pub async fn flush_tracer(&self) {
         self.inner.flush_tracer().await;
     }
+}
+
+fn checkpoint_status_name(status: &CheckpointStatus) -> &'static str {
+    match status {
+        CheckpointStatus::StepDone => "step_done",
+        CheckpointStatus::AwaitingToolExecution => "awaiting_tool_execution",
+        CheckpointStatus::ToolsExecuted => "tools_executed",
+        CheckpointStatus::RunDone => "run_done",
+        CheckpointStatus::Interrupted => "interrupted",
+        CheckpointStatus::Errored => "errored",
+        CheckpointStatus::Cancelled => "cancelled",
+    }
+}
+
+fn annotate_replay_state(
+    state: &mut crate::state::AgentState,
+    source_thread_id: &ThreadId,
+    source_run_id: &crate::types::RunId,
+    cursor: ChatReplayCursor,
+) {
+    let mut user_state = match state.user_state.take() {
+        serde_json::Value::Object(map) => map,
+        other => {
+            let mut map = serde_json::Map::new();
+            if !other.is_null() {
+                map.insert("previous_user_state".into(), other);
+            }
+            map
+        }
+    };
+
+    user_state.insert(
+        "replay".into(),
+        serde_json::json!({
+            "source_thread_id": source_thread_id,
+            "source_run_id": source_run_id,
+            "start_message_index": cursor.start_message_index,
+            "start_message_id": cursor.start_message_id,
+        }),
+    );
+    state.user_state = serde_json::Value::Object(user_state);
 }
 
 // ── Agent impl (stateless) ────────────────────────────────────────────────────

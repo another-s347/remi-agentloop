@@ -74,6 +74,16 @@ pub enum AgentError {
     #[error("Resume incomplete: expected {expected} interrupt results, got {got}")]
     ResumeIncomplete { expected: usize, got: usize },
 
+    #[error("Replay start index {requested} is out of bounds for thread {thread_id} with {available} messages")]
+    ReplayIndexOutOfBounds {
+        thread_id: ThreadId,
+        requested: usize,
+        available: usize,
+    },
+
+    #[error("Cannot replay from checkpoint status {status}")]
+    ReplayFromCheckpointNotAllowed { status: String },
+
     #[error("Context store error: {0}")]
     Store(String),
 
@@ -107,6 +117,20 @@ impl Clone for AgentError {
                 expected: *expected,
                 got: *got,
             },
+            Self::ReplayIndexOutOfBounds {
+                thread_id,
+                requested,
+                available,
+            } => Self::ReplayIndexOutOfBounds {
+                thread_id: thread_id.clone(),
+                requested: *requested,
+                available: *available,
+            },
+            Self::ReplayFromCheckpointNotAllowed { status } => {
+                Self::ReplayFromCheckpointNotAllowed {
+                    status: status.clone(),
+                }
+            }
             Self::Store(s) => Self::Store(s.clone()),
             Self::Io(s) => Self::Io(s.clone()),
             Self::Other(s) => Self::Other(s.clone()),

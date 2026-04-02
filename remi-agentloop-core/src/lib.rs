@@ -65,6 +65,8 @@
 //! | [`tracing`] | [`Tracer`](tracing::Tracer) trait + [`StdoutTracer`](tracing::stdout::StdoutTracer) |
 //! | [`protocol`] | [`ProtocolAgent`](protocol::ProtocolAgent) — SSE-over-HTTP transport protocol |
 
+#![allow(async_fn_in_trait)]
+
 // ── Re-exports ────────────────────────────────────────────────────────────────
 
 pub use remi_agentloop_macros::tool as tool_macro;
@@ -128,7 +130,8 @@ pub mod prelude {
     pub use crate::types::{
         AgentEvent, ChatInput, ChatRequest, ChatResponseChunk, Content, ContentPart, InterruptId,
         InterruptInfo, LoopInput, Message, MessageId, ParsedToolCall, ResumePayload, Role, RunId,
-        ThreadId, ToolCallOutcome, ToolCallResult,
+        SubSessionEvent, SubSessionEventPayload, ThreadId, ToolCallOutcome, ToolCallResult,
+        ChatReplayCursor, ChatSessionBundle,
     };
     pub use crate::union::{Union2, Union3, Union4};
 }

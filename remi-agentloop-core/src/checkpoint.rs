@@ -135,6 +135,19 @@ impl Checkpoint {
     pub fn is_resumable(&self) -> bool {
         self.pending_action.is_some()
     }
+
+    /// Whether this checkpoint can safely serve as the base for a replay.
+    pub fn is_replayable(&self) -> bool {
+        matches!(
+            self.status,
+            CheckpointStatus::StepDone
+                | CheckpointStatus::ToolsExecuted
+                | CheckpointStatus::RunDone
+                | CheckpointStatus::Interrupted
+                | CheckpointStatus::Errored
+                | CheckpointStatus::Cancelled
+        )
+    }
 }
 
 // ── CheckpointStore trait ─────────────────────────────────────────────────────

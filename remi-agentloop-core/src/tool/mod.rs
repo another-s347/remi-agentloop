@@ -33,6 +33,8 @@ pub enum ToolOutput {
     /// Live progress or intermediate text — shown to the user but not added
     /// to the conversation history.
     Delta(String),
+    /// Structured sub-session event emitted by a sub-agent tool.
+    SubSession(crate::types::SubSessionEvent),
     /// Final result content (text and/or images) — appended to the conversation
     /// as a tool-result message.
     Result(Content),

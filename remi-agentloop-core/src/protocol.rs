@@ -52,6 +52,19 @@ pub enum ProtocolEvent {
         result: String,
     },
 
+    #[serde(rename = "sub_session")]
+    SubSession {
+        parent_tool_call_id: String,
+        sub_thread_id: String,
+        sub_run_id: String,
+        agent_name: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        title: Option<String>,
+        #[serde(default, skip_serializing_if = "crate::types::is_zero_u32")]
+        depth: u32,
+        event: SubSessionEventPayload,
+    },
+
     #[serde(rename = "interrupt")]
     Interrupt { interrupts: Vec<InterruptInfo> },
 
@@ -214,6 +227,15 @@ impl From<AgentEvent> for ProtocolEvent {
             AgentEvent::ToolResult { id, name, result } => {
                 ProtocolEvent::ToolResult { id, name, result }
             }
+            AgentEvent::SubSession(event) => ProtocolEvent::SubSession {
+                parent_tool_call_id: event.parent_tool_call_id,
+                sub_thread_id: event.sub_thread_id.to_string(),
+                sub_run_id: event.sub_run_id.to_string(),
+                agent_name: event.agent_name,
+                title: event.title,
+                depth: event.depth,
+                event: event.payload,
+            },
             AgentEvent::Interrupt { interrupts } => ProtocolEvent::Interrupt { interrupts },
             AgentEvent::TurnStart { turn } => ProtocolEvent::TurnStart { turn },
             AgentEvent::Usage {

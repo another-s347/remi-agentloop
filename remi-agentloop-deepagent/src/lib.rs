@@ -32,6 +32,7 @@ pub mod events;
 pub mod registry;
 pub mod search;
 pub mod skill;
+pub mod sub_agent;
 pub mod task;
 pub mod todo;
 pub mod workspace_fs;
@@ -50,6 +51,7 @@ pub use skill::{
 };
 #[cfg(feature = "skill-virtual")]
 pub use skill::store::FsSkillStore;
+pub use sub_agent::{SubAgentEventStream, SubAgentToolAdapter};
 pub use task::SubAgentTaskTool;
 pub use todo::{TodoLayer, tools::TodoToolkit};
 pub use workspace_fs::{

@@ -106,6 +106,7 @@ impl<R: ToolRegistry> ToolRegistry for FileBackedRegistry<R> {
                         while let Some(item) = stream.next().await {
                             match item {
                                 ToolOutput::Delta(d) => deltas.push(d),
+                                ToolOutput::SubSession(_) => {}
                                 ToolOutput::Result(c) => final_result = Some(c.text_content()),
                             }
                         }

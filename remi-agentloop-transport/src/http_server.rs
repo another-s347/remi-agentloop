@@ -116,6 +116,7 @@ fn protocol_event_to_sse(event: &ProtocolEvent) -> Event {
         ProtocolEvent::ToolCallDelta { .. } => "tool_call_delta",
         ProtocolEvent::ToolDelta { .. }  => "tool_delta",
         ProtocolEvent::ToolResult { .. } => "tool_result",
+        ProtocolEvent::SubSession { .. } => "sub_session",
         ProtocolEvent::Interrupt { .. }  => "interrupt",
         ProtocolEvent::TurnStart { .. }  => "turn_start",
         ProtocolEvent::Usage { .. }      => "usage",

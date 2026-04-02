@@ -1,154 +1,84 @@
-//! `SubAgentTaskTool` — delegates tasks to a spawned inner agent.
-//!
-//! The tool accepts a `task` string, creates a fresh `AgentLoop` with bash
-//! and filesystem tools, runs the task to completion, and returns the agent's
-//! final text response.  This lets the outer agent offload focused subtasks
-//! to a "worker" without polluting its own context.
-//!
-//! ## Claude Code inspiration
-//!
-//! Claude Code's "subagent" pattern: the orchestrator agent plans and breaks
-//! down work, then delegates self-contained subtasks to isolated agents that
-//! each get a clean context.  This prevents context bloat from large
-//! intermediate outputs and allows independent retry of failed subtasks.
-
 use async_stream::stream;
 use futures::{Future, Stream, StreamExt};
-use remi_core::agent::Agent;
-use remi_core::builder::AgentBuilder;
-use remi_core::error::AgentError;
-use remi_core::model::ChatModel;
-use remi_core::tool::{Tool, ToolContext, ToolOutput, ToolResult};
-use remi_core::types::{
-    AgentEvent, LoopInput, ResumePayload, SubSessionEvent, SubSessionEventPayload,
+use remi_core::prelude::{
+    AgentError, AgentEvent, ResumePayload, SubSessionEvent, SubSessionEventPayload, Tool,
+    ToolContext, ToolOutput, ToolResult,
 };
-use remi_tool::{
-    BashTool, LocalFsCreateTool, LocalFsLsTool, LocalFsReadTool, LocalFsRemoveTool,
-    LocalFsWriteTool,
-};
-use serde_json::json;
+use serde_json::Value as JsonValue;
 use std::pin::Pin;
 use std::sync::Arc;
 
-// ── Type alias ────────────────────────────────────────────────────────────────
+pub type SubAgentEventStream = Pin<Box<dyn Stream<Item = AgentEvent>>>;
 
-type AgentEventStream = Pin<Box<dyn Stream<Item = AgentEvent>>>;
-
-/// Object-safe runner type: takes an owned task string, returns a boxed stream future.
-pub type RunnerFn = dyn Fn(String) -> Pin<Box<dyn Future<Output = Result<AgentEventStream, AgentError>>>>
+type TitleFn = dyn Fn(&JsonValue) -> Option<String> + Send + Sync;
+type RunnerFn = dyn Fn(JsonValue, ToolContext) -> Pin<Box<dyn Future<Output = Result<SubAgentEventStream, AgentError>>>>
     + Send
     + Sync;
 
-// ── SubAgentTaskTool ──────────────────────────────────────────────────────────
-
-/// A tool that delegates a task to a sub-agent and returns its final response.
-pub struct SubAgentTaskTool {
-    runner: Arc<RunnerFn>,
-    tool_description: String,
+/// Adapts an inner agent run into a normal tool call with structured sub-session output.
+///
+/// The inner agent's intermediate events are surfaced as `ToolOutput::SubSession(...)`, while
+/// only the final answer is returned to the parent loop as the tool result.
+pub struct SubAgentToolAdapter {
+    name: String,
+    description: String,
+    parameters_schema: JsonValue,
     agent_name: String,
+    title_from_args: Arc<TitleFn>,
+    runner: Arc<RunnerFn>,
 }
 
-impl SubAgentTaskTool {
-    /// Build a `SubAgentTaskTool` backed by `model`.
-    ///
-    /// Each invocation constructs a temporary `AgentLoop<M>` with bash + fs
-    /// tools, cloning `model` so the original remains usable.
-    pub fn new<M>(
-        model: M,
-        system_prompt: impl Into<String>,
-        max_turns: usize,
-    ) -> Self
-    where
-        M: ChatModel + Clone + Send + Sync + 'static,
-    {
-        let system_prompt = system_prompt.into();
-        let runner: Arc<RunnerFn> = Arc::new(move |task: String| {
-            let model = model.clone();
-            let system_prompt = system_prompt.clone();
-            Box::pin(async move {
-                let agent = AgentBuilder::new()
-                    .model(model)
-                    .system(system_prompt)
-                    .tool(BashTool)
-                    .tool(LocalFsReadTool)
-                    .tool(LocalFsWriteTool)
-                    .tool(LocalFsCreateTool)
-                    .tool(LocalFsRemoveTool)
-                    .tool(LocalFsLsTool)
-                    .max_turns(max_turns)
-                    .build_loop();
-
-                Ok(Box::pin(stream! {
-                    match agent.chat(LoopInput::start(&task)).await {
-                        Ok(inner_stream) => {
-                            let mut inner_stream = std::pin::pin!(inner_stream);
-                            while let Some(event) = inner_stream.next().await {
-                                yield event;
-                            }
-                        }
-                        Err(error) => {
-                            yield AgentEvent::Error(error);
-                        }
-                    }
-                }) as AgentEventStream)
-            })
-        });
-
+impl SubAgentToolAdapter {
+    pub fn new(
+        name: impl Into<String>,
+        description: impl Into<String>,
+        parameters_schema: JsonValue,
+        agent_name: impl Into<String>,
+        title_from_args: impl Fn(&JsonValue) -> Option<String> + Send + Sync + 'static,
+        runner: impl Fn(JsonValue, ToolContext) -> Pin<Box<dyn Future<Output = Result<SubAgentEventStream, AgentError>>>>
+            + Send
+            + Sync
+            + 'static,
+    ) -> Self {
         Self {
-            runner,
-            tool_description: "Delegate a focused subtask to a worker sub-agent. \
-                The sub-agent has access to bash and filesystem tools. \
-                Use this for self-contained tasks (file operations, code generation, \
-                research) that you want to keep isolated from the main context."
-                .to_string(),
-            agent_name: "worker".to_string(),
+            name: name.into(),
+            description: description.into(),
+            parameters_schema,
+            agent_name: agent_name.into(),
+            title_from_args: Arc::new(title_from_args),
+            runner: Arc::new(runner),
         }
     }
 }
 
-// ── Tool impl ─────────────────────────────────────────────────────────────────
-
-impl Tool for SubAgentTaskTool {
-    fn name(&self) -> &str { "task__run" }
-
-    fn description(&self) -> &str {
-        &self.tool_description
+impl Tool for SubAgentToolAdapter {
+    fn name(&self) -> &str {
+        &self.name
     }
 
-    fn parameters_schema(&self) -> serde_json::Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "task": {
-                    "type": "string",
-                    "description": "Complete, self-contained task description for the sub-agent. \
-                        Include all necessary context since the sub-agent starts with a clean history."
-                }
-            },
-            "required": ["task"]
-        })
+    fn description(&self) -> &str {
+        &self.description
+    }
+
+    fn parameters_schema(&self) -> JsonValue {
+        self.parameters_schema.clone()
     }
 
     async fn execute(
         &self,
-        arguments: serde_json::Value,
+        arguments: JsonValue,
         _resume: Option<ResumePayload>,
-        _ctx: &ToolContext,
+        ctx: &ToolContext,
     ) -> Result<ToolResult<impl Stream<Item = ToolOutput>>, AgentError> {
-        let task = arguments["task"]
-            .as_str()
-            .ok_or_else(|| AgentError::tool("task__run", "missing 'task'"))?
-            .to_string();
-
         let runner = Arc::clone(&self.runner);
         let agent_name = self.agent_name.clone();
-        let title = Some(task.clone());
+        let title = (self.title_from_args)(&arguments);
+        let tool_ctx = ctx.clone();
 
         Ok(ToolResult::Output(stream! {
-            let inner_stream = match (runner)(task).await {
+            let inner_stream = match (runner)(arguments, tool_ctx).await {
                 Ok(stream) => stream,
                 Err(error) => {
-                    yield ToolOutput::Delta(format!("[sub-agent failed to start: {error}]"));
                     yield ToolOutput::text(format!("Sub-agent failed to start: {error}"));
                     return;
                 }
@@ -319,7 +249,8 @@ impl Tool for SubAgentTaskTool {
                         return;
                     }
                     AgentEvent::Interrupt { interrupts } => {
-                        let message = format!("Sub-agent interrupted with {} pending action(s)", interrupts.len());
+                        let message =
+                            format!("Sub-agent interrupted with {} pending action(s)", interrupts.len());
                         if let (Some(thread_id), Some(run_id)) = (&sub_thread_id, &sub_run_id) {
                             yield ToolOutput::SubSession(SubSessionEvent::new(
                                 String::new(),
@@ -336,11 +267,94 @@ impl Tool for SubAgentTaskTool {
                         yield ToolOutput::text(message);
                         return;
                     }
-                    AgentEvent::Cancelled | AgentEvent::Checkpoint(_) | AgentEvent::NeedToolExecution { .. } | AgentEvent::Usage { .. } | AgentEvent::SubSession(_) => {}
+                    AgentEvent::Cancelled
+                    | AgentEvent::Checkpoint(_)
+                    | AgentEvent::NeedToolExecution { .. }
+                    | AgentEvent::Usage { .. }
+                    | AgentEvent::SubSession(_) => {}
                 }
             }
 
             yield ToolOutput::text(final_output);
         }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use futures::stream;
+    use remi_core::prelude::{AgentConfig, RunId, ThreadId};
+    use serde_json::json;
+    use std::sync::{Arc, RwLock};
+
+    #[tokio::test]
+    async fn adapter_streams_sub_session_but_returns_only_final_result() {
+        let tool = SubAgentToolAdapter::new(
+            "specialist",
+            "Test specialist.",
+            json!({
+                "type": "object",
+                "properties": { "query": { "type": "string" } },
+                "required": ["query"]
+            }),
+            "tester",
+            |arguments| arguments.get("query").and_then(JsonValue::as_str).map(ToString::to_string),
+            |_arguments, _ctx| {
+                Box::pin(async move {
+                    Ok(Box::pin(stream::iter(vec![
+                        AgentEvent::RunStart {
+                            thread_id: ThreadId("sub-thread".into()),
+                            run_id: RunId("sub-run".into()),
+                            metadata: None,
+                        },
+                        AgentEvent::ToolCallStart {
+                            id: "tool-1".into(),
+                            name: "calc".into(),
+                        },
+                        AgentEvent::TextDelta("42".into()),
+                        AgentEvent::Done,
+                    ])) as SubAgentEventStream)
+                })
+            },
+        );
+
+        let ctx = ToolContext {
+            config: AgentConfig::default(),
+            thread_id: Some(ThreadId("parent-thread".into())),
+            run_id: RunId("parent-run".into()),
+            metadata: None,
+            user_state: Arc::new(RwLock::new(JsonValue::Null)),
+        };
+
+        let result = tool
+            .execute(json!({ "query": "what is 6*7" }), None, &ctx)
+            .await
+            .expect("tool executes");
+
+        let ToolResult::Output(stream) = result else {
+            panic!("expected output stream");
+        };
+
+        let outputs = stream.collect::<Vec<_>>().await;
+
+        assert!(outputs.iter().any(|item| matches!(
+            item,
+            ToolOutput::SubSession(SubSessionEvent {
+                payload: SubSessionEventPayload::Start,
+                ..
+            })
+        )));
+        assert!(outputs.iter().any(|item| matches!(
+            item,
+            ToolOutput::SubSession(SubSessionEvent {
+                payload: SubSessionEventPayload::ToolCallStart { name, .. },
+                ..
+            }) if name == "calc"
+        )));
+        assert!(outputs.iter().any(|item| matches!(
+            item,
+            ToolOutput::Result(content) if content.text_content() == "42"
+        )));
     }
 }

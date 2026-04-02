@@ -151,6 +151,7 @@ pub struct TurnStartTrace {
 // ── Tracer trait ──────────────────────────────────────────────────────────────
 
 /// Pluggable tracing backend — all methods have default no-op implementations
+#[allow(async_fn_in_trait)]
 pub trait Tracer {
     async fn on_run_start(&self, _event: &RunStartTrace) {}
     async fn on_run_end(&self, _event: &RunEndTrace) {}

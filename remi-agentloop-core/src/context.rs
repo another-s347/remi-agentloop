@@ -208,6 +208,33 @@ pub trait ContextStoreExt: ContextStore {
         self.append_messages(&new_thread, forked).await?;
         Ok(new_thread)
     }
+
+    /// Clone messages up to and including `up_to_index` into a new thread.
+    ///
+    /// This is useful for replay/debug flows that restart from a historical
+    /// point in the conversation while preserving the original thread.
+    async fn fork_thread_at_index(
+        &self,
+        source: &ThreadId,
+        up_to_index: usize,
+    ) -> Result<ThreadId, AgentError> {
+        let messages = self.get_messages(source).await?;
+        if up_to_index >= messages.len() {
+            return Err(AgentError::ReplayIndexOutOfBounds {
+                thread_id: source.clone(),
+                requested: up_to_index,
+                available: messages.len(),
+            });
+        }
+
+        let forked: Vec<Message> = messages[..=up_to_index]
+            .iter()
+            .map(|m| Message { id: MessageId::new(), ..m.clone() })
+            .collect();
+        let new_thread = self.create_thread().await?;
+        self.append_messages(&new_thread, forked).await?;
+        Ok(new_thread)
+    }
 }
 
 // blanket impl — every ContextStore gets ContextStoreExt for free

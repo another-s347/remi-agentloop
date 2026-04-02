@@ -2,6 +2,8 @@
 
 > 基于现有架构的可行性分析 + 实现方案
 
+补充：如果你要实现“子 agent 作为 tool，过程投影到子会话”的标准做法，见 [17-sub-agent-sub-session.md](17-sub-agent-sub-session.md)。
+
 ## 结论速览
 
 | 模式 | 是否需要改架构 | 实现难度 | 关键依赖 |

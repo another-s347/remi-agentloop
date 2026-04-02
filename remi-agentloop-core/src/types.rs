@@ -548,6 +548,7 @@ pub enum AgentEvent {
         name: String,
         result: String,
     },
+    SubSession(SubSessionEvent),
     Interrupt {
         interrupts: Vec<InterruptInfo>,
     },
@@ -583,6 +584,87 @@ pub enum AgentEvent {
     },
 }
 
+pub fn is_zero_u32(value: &u32) -> bool {
+    *value == 0
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SubSessionEvent {
+    pub parent_tool_call_id: String,
+    pub sub_thread_id: ThreadId,
+    pub sub_run_id: RunId,
+    pub agent_name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub depth: u32,
+    #[serde(flatten)]
+    pub payload: SubSessionEventPayload,
+}
+
+impl SubSessionEvent {
+    pub fn new(
+        parent_tool_call_id: impl Into<String>,
+        sub_thread_id: ThreadId,
+        sub_run_id: RunId,
+        agent_name: impl Into<String>,
+        title: Option<String>,
+        depth: u32,
+        payload: SubSessionEventPayload,
+    ) -> Self {
+        Self {
+            parent_tool_call_id: parent_tool_call_id.into(),
+            sub_thread_id,
+            sub_run_id,
+            agent_name: agent_name.into(),
+            title,
+            depth,
+            payload,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "sub_type", rename_all = "snake_case")]
+pub enum SubSessionEventPayload {
+    Start,
+    Delta {
+        content: String,
+    },
+    ThinkingStart,
+    ThinkingEnd {
+        content: String,
+    },
+    ToolCallStart {
+        id: String,
+        name: String,
+    },
+    ToolCallArgumentsDelta {
+        id: String,
+        delta: String,
+    },
+    ToolDelta {
+        id: String,
+        name: String,
+        delta: String,
+    },
+    ToolResult {
+        id: String,
+        name: String,
+        result: String,
+    },
+    TurnStart {
+        turn: usize,
+    },
+    Done {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        final_output: Option<String>,
+    },
+    Error {
+        message: String,
+    },
+}
+
 /// Details of a single tool interrupt — part of [`AgentEvent::Interrupt`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InterruptInfo {
@@ -613,6 +695,68 @@ pub struct InterruptInfo {
 pub struct ResumePayload {
     pub interrupt_id: InterruptId,
     pub result: serde_json::Value,
+}
+
+/// Versioned export of a chat/debug session for later replay or inspection.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChatSessionBundle {
+    pub version: u32,
+    pub exported_at: chrono::DateTime<chrono::Utc>,
+    pub thread_id: ThreadId,
+    pub run_id: RunId,
+    pub replay: ChatReplayCursor,
+    pub state: crate::state::AgentState,
+    #[serde(default)]
+    pub checkpoints: Vec<crate::checkpoint::Checkpoint>,
+    #[serde(default)]
+    pub metadata: serde_json::Map<String, Value>,
+}
+
+impl ChatSessionBundle {
+    pub const VERSION: u32 = 1;
+
+    pub fn new(state: crate::state::AgentState) -> Self {
+        let replay = ChatReplayCursor::from_state(&state);
+        Self {
+            version: Self::VERSION,
+            exported_at: chrono::Utc::now(),
+            thread_id: state.thread_id.clone(),
+            run_id: state.run_id.clone(),
+            replay,
+            state,
+            checkpoints: Vec::new(),
+            metadata: serde_json::Map::new(),
+        }
+    }
+
+    pub fn with_checkpoints(mut self, checkpoints: Vec<crate::checkpoint::Checkpoint>) -> Self {
+        self.checkpoints = checkpoints;
+        self
+    }
+
+    pub fn with_metadata(mut self, metadata: serde_json::Map<String, Value>) -> Self {
+        self.metadata = metadata;
+        self
+    }
+}
+
+/// Location in the exported conversation history from which replay should start.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChatReplayCursor {
+    pub start_message_index: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub start_message_id: Option<MessageId>,
+}
+
+impl ChatReplayCursor {
+    pub fn from_state(state: &crate::state::AgentState) -> Self {
+        let start_message_index = state.messages.len().saturating_sub(1);
+        let start_message_id = state.messages.get(start_message_index).map(|msg| msg.id.clone());
+        Self {
+            start_message_index,
+            start_message_id,
+        }
+    }
 }
 
 // ── Internal loop types (pub(crate)) ─────────────────────────────────────────
