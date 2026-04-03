@@ -234,11 +234,14 @@ fn build_wasip2(
         .tempdir()
         .expect("cannot create temp dir");
     let crate_dir = tmp.path();
+    let dependency_paths = resolve_agentloop_dependency_paths(agent_path);
 
     // Generate Cargo.toml
     let cargo_toml = templates::wasip2_cargo_toml(
         agent_name,
         &agent_path.display().to_string(),
+        &dependency_paths.remi_agentloop_dep,
+        &dependency_paths.remi_agentloop_macros_dep,
     );
     std::fs::write(crate_dir.join("Cargo.toml"), cargo_toml).unwrap();
 
@@ -326,11 +329,13 @@ fn build_web(
         .tempdir()
         .expect("cannot create temp dir");
     let crate_dir = tmp.path();
+    let dependency_paths = resolve_agentloop_dependency_paths(agent_path);
 
     // Generate Cargo.toml
     let cargo_toml = templates::web_cargo_toml(
         agent_name,
         &agent_path.display().to_string(),
+        &dependency_paths.remi_agentloop_dep,
     );
     std::fs::write(crate_dir.join("Cargo.toml"), cargo_toml).unwrap();
 
@@ -436,4 +441,48 @@ fn copy_dir_recursive(src: &Path, dst: &Path) {
             std::fs::copy(entry.path(), &dest).unwrap();
         }
     }
+}
+
+struct AgentloopDependencyPaths {
+    remi_agentloop_dep: String,
+    remi_agentloop_macros_dep: String,
+}
+
+fn resolve_agentloop_dependency_paths(agent_path: &Path) -> AgentloopDependencyPaths {
+    if let Some(repo_root) = find_local_agentloop_repo(agent_path) {
+        let remi_agentloop = toml_path_string(&repo_root.join("remi-agentloop"));
+        let remi_agentloop_macros = toml_path_string(&repo_root.join("remi-agentloop-macros"));
+        return AgentloopDependencyPaths {
+            remi_agentloop_dep: format!("path = \"{remi_agentloop}\""),
+            remi_agentloop_macros_dep: format!("path = \"{remi_agentloop_macros}\""),
+        };
+    }
+
+    AgentloopDependencyPaths {
+        remi_agentloop_dep:
+            "git = \"https://github.com/another-s347/remi-agentloop.git\"".to_string(),
+        remi_agentloop_macros_dep:
+            "git = \"https://github.com/another-s347/remi-agentloop.git\"".to_string(),
+    }
+}
+
+fn find_local_agentloop_repo(agent_path: &Path) -> Option<PathBuf> {
+    for ancestor in agent_path.ancestors() {
+        let parent = ancestor.parent()?;
+        let candidate = parent.join("remi-agentloop");
+        if candidate.join("remi-agentloop").join("Cargo.toml").exists()
+            && candidate.join("remi-agentloop-macros").join("Cargo.toml").exists()
+        {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+fn toml_path_string(path: &Path) -> String {
+    path.display()
+        .to_string()
+        .strip_prefix(r"\\?\")
+        .unwrap_or(&path.display().to_string())
+        .replace('\\', "/")
 }
