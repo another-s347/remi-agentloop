@@ -17,6 +17,10 @@ exclude = [
     "examples/composable-calculator-agent",
     "examples/composable-calculator-wasip2",
     "examples/composable-calculator-browser",
+    "examples/acp-multi-agent",  # 需要修复异步锁问题
+    "examples/acp-http-server",  # 可以单独编译
+    "examples/acp-http-client",  # 可以单独编译
+    "examples/acp-simple",       # 可以单独编译
 ]
 resolver = "2"
 
