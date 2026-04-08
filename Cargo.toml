@@ -9,7 +9,7 @@ members = [
     "remi-agentloop-guest",
     "remi-agentloop-wasm",
     "remi-agentloop-cli",
-    "remi-agentloop-deepagent",
+    "remi-agentloop-deepagent", "mcp-server",
 ]
 exclude = [
     "examples/wasm-calculator-guest",
