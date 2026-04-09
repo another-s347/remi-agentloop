@@ -3,7 +3,7 @@ use futures::{Stream, StreamExt};
 use futures_timer::Delay;
 use serde::Deserialize;
 use std::future::Future;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use remi_core::agent::Agent;
 #[cfg(feature = "http-client")]
@@ -202,6 +202,27 @@ fn model_http_error(status: u16, body_text: &str, retries_used: usize) -> AgentE
     AgentError::model(format!("HTTP {status}: {body_text}"))
 }
 
+fn chunk_has_ttft_signal(chunk: &OAIChatCompletionChunk) -> bool {
+    chunk.choices.iter().any(|choice| {
+        choice.delta.role.is_some()
+            || choice
+                .delta
+                .content
+                .as_ref()
+                .is_some_and(|content| !content.is_empty())
+            || choice
+                .delta
+                .reasoning_content
+                .as_ref()
+                .is_some_and(|content| !content.is_empty())
+            || choice
+                .delta
+                .tool_calls
+                .as_ref()
+                .is_some_and(|tool_calls| !tool_calls.is_empty())
+    })
+}
+
 impl<T: HttpTransport> Agent for OpenAIClient<T> {
     type Request = ChatRequest;
     type Response = ChatResponseChunk;
@@ -250,7 +271,8 @@ impl<T: HttpTransport> Agent for OpenAIClient<T> {
             ];
 
             let mut retries_used = 0usize;
-            let response = loop {
+            let (response, request_started_at) = loop {
+                let request_started_at = Instant::now();
                 let response = transport
                     .post_streaming(url.clone(), headers.clone(), body.clone())
                     .await
@@ -265,7 +287,7 @@ impl<T: HttpTransport> Agent for OpenAIClient<T> {
                     })?;
 
                 if (200..300).contains(&response.status) {
-                    break response;
+                    break (response, request_started_at);
                 }
 
                 let status = response.status;
@@ -298,6 +320,7 @@ impl<T: HttpTransport> Agent for OpenAIClient<T> {
 
             Ok(stream! {
                 let mut lines = std::pin::pin!(lines);
+                let mut ttft_logged = false;
                 while let Some(line) = lines.next().await {
                     if line.is_empty() || line.starts_with(':') {
                         continue;
@@ -314,6 +337,16 @@ impl<T: HttpTransport> Agent for OpenAIClient<T> {
                         match serde_json::from_str::<OAIChatCompletionChunk>(data) {
                             Err(_) => continue,
                             Ok(chunk) => {
+                                if !ttft_logged && chunk_has_ttft_signal(&chunk) {
+                                    ttft_logged = true;
+                                    tracing::info!(
+                                        model = %request_model,
+                                        base_url = %request_base_url,
+                                        retries_used,
+                                        ttft_ms = request_started_at.elapsed().as_millis(),
+                                        "Model TTFT"
+                                    );
+                                }
                                 if let Some(usage) = chunk.usage {
                                     yield ChatResponseChunk::Usage {
                                         prompt_tokens: usage.prompt_tokens,

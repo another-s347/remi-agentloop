@@ -2184,6 +2184,7 @@ dependencies = [
  "remi-agentloop-transport",
  "serde",
  "serde_json",
+ "tracing",
 ]
 
 [[package]]

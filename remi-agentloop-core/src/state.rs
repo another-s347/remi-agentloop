@@ -208,6 +208,40 @@ impl StepConfig {
     }
 }
 
+fn metadata_flag(metadata: &serde_json::Value, key: &str) -> Option<bool> {
+    match metadata.get(key)? {
+        serde_json::Value::Bool(value) => Some(*value),
+        serde_json::Value::String(value) => match value.trim().to_ascii_lowercase().as_str() {
+            "true" | "1" | "yes" | "on" | "enabled" => Some(true),
+            "false" | "0" | "no" | "off" | "disabled" => Some(false),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn supports_kimi_thinking_control(model: &str) -> bool {
+    model.trim().eq_ignore_ascii_case("kimi-k2.5")
+}
+
+fn apply_provider_request_overrides(request: &mut ChatRequest) {
+    let Some(metadata) = request.metadata.as_ref() else {
+        return;
+    };
+    let Some(thinking_enabled) = metadata_flag(metadata, "thinking_enabled") else {
+        return;
+    };
+
+    if supports_kimi_thinking_control(&request.model) {
+        request.extra_body.insert(
+            "thinking".to_string(),
+            serde_json::json!({
+                "type": if thinking_enabled { "enabled" } else { "disabled" },
+            }),
+        );
+    }
+}
+
 // ── AgentPhase ────────────────────────────────────────────────────────────────
 
 /// Indicates what the caller should do after the current step completes.
@@ -393,7 +427,7 @@ pub fn step<M: ChatModel>(
             Some(state.tool_definitions.clone())
         };
 
-        let request = ChatRequest {
+        let mut request = ChatRequest {
             model: state.config.model.clone(),
             messages: state.messages.clone(),
             tools: tool_defs,
@@ -405,6 +439,7 @@ pub fn step<M: ChatModel>(
             rate_limit_retry: state.config.rate_limit_retry.clone(),
             extra_body: state.config.extra_body.clone(),
         };
+        apply_provider_request_overrides(&mut request);
 
         // ── 3. Call model ────────────────────────────────────────────
         let chat_stream = match model.chat(request).await {
@@ -513,5 +548,49 @@ pub fn step<M: ChatModel>(
             state.phase = AgentPhase::AwaitingToolExecution { tool_calls: parsed.clone() };
             yield StepEvent::NeedToolExecution { state, tool_calls: parsed };
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{apply_provider_request_overrides, metadata_flag};
+    use crate::types::{ChatRequest, Message};
+    use serde_json::json;
+
+    fn request(model: &str, metadata: Option<serde_json::Value>) -> ChatRequest {
+        ChatRequest {
+            model: model.to_string(),
+            messages: vec![Message::user("hello")],
+            tools: None,
+            temperature: None,
+            max_tokens: None,
+            stream: true,
+            stream_options: None,
+            metadata,
+            rate_limit_retry: None,
+            extra_body: serde_json::Map::new(),
+        }
+    }
+
+    #[test]
+    fn metadata_flag_accepts_bool_and_string_values() {
+        assert_eq!(metadata_flag(&json!({ "thinking_enabled": true }), "thinking_enabled"), Some(true));
+        assert_eq!(metadata_flag(&json!({ "thinking_enabled": false }), "thinking_enabled"), Some(false));
+        assert_eq!(metadata_flag(&json!({ "thinking_enabled": "enabled" }), "thinking_enabled"), Some(true));
+        assert_eq!(metadata_flag(&json!({ "thinking_enabled": "disabled" }), "thinking_enabled"), Some(false));
+    }
+
+    #[test]
+    fn apply_provider_request_overrides_disables_kimi_thinking() {
+        let mut request = request("kimi-k2.5", Some(json!({ "thinking_enabled": false })));
+        apply_provider_request_overrides(&mut request);
+        assert_eq!(request.extra_body.get("thinking"), Some(&json!({ "type": "disabled" })));
+    }
+
+    #[test]
+    fn apply_provider_request_overrides_leaves_other_models_unchanged() {
+        let mut request = request("gpt-4o", Some(json!({ "thinking_enabled": false })));
+        apply_provider_request_overrides(&mut request);
+        assert!(!request.extra_body.contains_key("thinking"));
     }
 }
