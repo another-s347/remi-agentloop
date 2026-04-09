@@ -36,6 +36,22 @@
 use remi_agentloop_guest::prelude::*;
 use serde::{Deserialize, Serialize};
 
+mod abi_smoke {
+    pub type GuestProtocolEvent =
+        remi_agentloop_guest::bindings::exports::remi::agentloop::agent::ProtocolEvent;
+    pub type GuestConfig = remi_agentloop_guest::bindings::remi::agentloop::config::AgentConfig;
+    pub type GuestApiVersion =
+        remi_agentloop_guest::bindings::exports::remi::agentloop::agent_info::ApiVersion;
+
+    #[allow(dead_code)]
+    pub fn _touch_bindings(
+        _event: Option<GuestProtocolEvent>,
+        _config: Option<GuestConfig>,
+        _version: GuestApiVersion,
+    ) {
+    }
+}
+
 // ── Agent ───────────────────────────────────────────────────────────────────
 
 #[derive(Default)]

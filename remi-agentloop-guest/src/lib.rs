@@ -54,6 +54,18 @@ pub use wit_bindgen as _wit_bindgen;
 
 pub use types::*;
 
+/// Public WIT bindings for the guest ABI generated from the shared world file.
+///
+/// This exposes the generated Rust types and `exports::*::Guest` traits so
+/// downstream guest crates can reference the canonical binding surface without
+/// duplicating the WIT schema themselves.
+pub mod bindings {
+    crate::_wit_bindgen::generate!({
+        path: "../wit/world.wit",
+        world: "agent-world",
+    });
+}
+
 // ── GuestAgent trait ────────────────────────────────────────────────────────
 
 /// Trait for implementing a WASM guest agent.
@@ -95,7 +107,10 @@ pub trait GuestAgent: Default {
 /// source of truth without requiring the `wit/` directory to be on the include
 /// path at compile time.
 #[doc(hidden)]
-pub const WIT_INLINE: &str = "
+#[macro_export]
+macro_rules! __remi_agentloop_wit_inline {
+    () => {
+        "
 package remi:agentloop;
 
 interface config {
@@ -155,6 +170,8 @@ interface agent {
         content: content,
         tool-calls: option<list<tool-call-message>>,
         tool-call-id: option<string>,
+        reasoning-content: option<string>,
+        metadata-json: option<string>,
     }
     record tool-definition {
         name: string,
@@ -214,6 +231,8 @@ interface agent {
         temperature: option<f64>,
         max-tokens: option<u32>,
         metadata-json: option<string>,
+        user-state-json: option<string>,
+        message-metadata-json: option<string>,
     }
     record loop-input-resume {
         state: agent-state,
@@ -263,7 +282,194 @@ world agent-world {
     export agent;
     export agent-info;
 }
-";
+"
+    };
+}
+
+#[doc(hidden)]
+pub const WIT_INLINE: &str = __remi_agentloop_wit_inline!();
+
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __remi_agentloop_generate_bindings {
+    () => {
+        $crate::_wit_bindgen::generate!({
+            inline: "
+package remi:agentloop;
+
+interface config {
+    record agent-config {
+        api-key: option<string>,
+        model: option<string>,
+        base-url: option<string>,
+        temperature: option<f64>,
+        max-tokens: option<u32>,
+        timeout-ms: option<u64>,
+        rate-limit-retry-json: option<string>,
+        headers-json: option<string>,
+        extra-json: option<string>,
+    }
+    get-config: func() -> agent-config;
+}
+
+interface agent-info {
+    record api-version {
+        major: u32,
+        minor: u32,
+        patch: u32,
+    }
+    get-api-version: func() -> api-version;
+    get-min-host-version: func() -> api-version;
+}
+
+interface agent {
+    record image-url-detail {
+        url: string,
+        detail: option<string>,
+    }
+    record audio-detail {
+        data: string,
+        format: string,
+    }
+    variant content-part {
+        text(string),
+        image-url(image-url-detail),
+        image-base64(tuple<string, string>),
+        audio(audio-detail),
+        file-json(string),
+    }
+    variant content {
+        text(string),
+        parts(list<content-part>),
+    }
+    record tool-call-message {
+        id: string,
+        call-type: string,
+        name: string,
+        arguments: string,
+    }
+    record message {
+        id: string,
+        role: string,
+        content: content,
+        tool-calls: option<list<tool-call-message>>,
+        tool-call-id: option<string>,
+        reasoning-content: option<string>,
+        metadata-json: option<string>,
+    }
+    record tool-definition {
+        name: string,
+        description: string,
+        parameters-schema-json: string,
+        extra-prompt: option<string>,
+    }
+    record parsed-tool-call {
+        id: string,
+        name: string,
+        arguments-json: string,
+    }
+    record tool-call-result {
+        tool-call-id: string,
+        tool-name: string,
+        content: content,
+    }
+    record tool-call-error {
+        tool-call-id: string,
+        tool-name: string,
+        err-msg: string,
+    }
+    variant tool-call-outcome {
+        %result(tool-call-result),
+        %error(tool-call-error),
+    }
+    record step-config {
+        model: string,
+        temperature: option<f64>,
+        max-tokens: option<u32>,
+        rate-limit-retry-json: option<string>,
+        metadata-json: option<string>,
+    }
+    record agent-state {
+        messages: list<message>,
+        system-prompt: option<string>,
+        tool-definitions: list<tool-definition>,
+        config: step-config,
+        thread-id: string,
+        run-id: string,
+        turn: u32,
+        phase-json: string,
+        user-state-json: string,
+    }
+    record interrupt-info {
+        interrupt-id: string,
+        tool-call-id: string,
+        tool-name: string,
+        kind: string,
+        data-json: string,
+    }
+    record loop-input-start {
+        content: content,
+        history: list<message>,
+        extra-tools: list<tool-definition>,
+        model: option<string>,
+        temperature: option<f64>,
+        max-tokens: option<u32>,
+        metadata-json: option<string>,
+        user-state-json: option<string>,
+        message-metadata-json: option<string>,
+    }
+    record loop-input-resume {
+        state: agent-state,
+        results: list<tool-call-outcome>,
+    }
+    variant loop-input {
+        start(loop-input-start),
+        resume(loop-input-resume),
+    }
+    record run-start-event { thread-id: string, run-id: string, metadata-json: option<string> }
+    record delta-event { content: string, role: option<string> }
+    record tool-call-start-event { id: string, name: string }
+    record tool-call-delta-event { id: string, arguments-delta: string }
+    record tool-delta-event { id: string, name: string, delta: string }
+    record tool-result-event { id: string, name: string, value: string }
+    record interrupt-event { interrupts: list<interrupt-info> }
+    record turn-start-event { turn: u32 }
+    record usage-event { prompt-tokens: u32, completion-tokens: u32 }
+    record error-event { message: string, code: option<string> }
+    record need-tool-execution-event {
+        state: agent-state,
+        tool-calls: list<parsed-tool-call>,
+        completed-results: list<tool-call-outcome>,
+    }
+    variant protocol-event {
+        run-start(run-start-event),
+        delta(delta-event),
+        tool-call-start(tool-call-start-event),
+        tool-call-delta(tool-call-delta-event),
+        tool-delta(tool-delta-event),
+        tool-result(tool-result-event),
+        interrupt(interrupt-event),
+        turn-start(turn-start-event),
+        usage(usage-event),
+        %error(error-event),
+        done,
+        need-tool-execution(need-tool-execution-event),
+    }
+    resource event-stream {
+        next: func() -> option<protocol-event>;
+    }
+    chat: func(input: loop-input) -> result<event-stream, string>;
+}
+
+world agent-world {
+    import config;
+    export agent;
+    export agent-info;
+}
+",
+        });
+    };
+}
 
 #[cfg(test)]
 mod tests {
@@ -283,9 +489,7 @@ mod tests {
 #[macro_export]
 macro_rules! generate {
     () => {
-        $crate::_wit_bindgen::generate!({
-            inline: $crate::WIT_INLINE,
-        });
+        $crate::__remi_agentloop_generate_bindings!();
     };
 }
 
@@ -320,9 +524,7 @@ macro_rules! export_agent {
     ($agent:ident, api_version: ($av_maj:expr, $av_min:expr, $av_patch:expr), min_host: ($mh_maj:expr, $mh_min:expr, $mh_patch:expr)) => {
 
         // ── 1. WIT bindings ──────────────────────────────────────────────────
-        $crate::_wit_bindgen::generate!({
-            inline: $crate::WIT_INLINE,
-        });
+        $crate::__remi_agentloop_generate_bindings!();
 
         // ── 2. Event stream resource ─────────────────────────────────────────
         pub struct RemiEventStream {
@@ -432,6 +634,7 @@ macro_rules! export_agent {
                         }).collect()
                     }),
                     tool_call_id: m.tool_call_id,
+                    name: None,
                     reasoning_content: m.reasoning_content,
                     metadata: m.metadata_json.and_then(|j| $crate::_serde_json::from_str(&j).ok()),
                 }
@@ -597,6 +800,7 @@ macro_rules! export_agent {
                             .and_then(|j| $crate::_serde_json::from_str(&j).ok()),
                         message_metadata: s.message_metadata_json
                             .and_then(|j| $crate::_serde_json::from_str(&j).ok()),
+                        user_name: None,
                     },
                     wit::LoopInput::Resume(r) => $crate::LoopInput::Resume {
                         state: wit_state_to_rust(r.state),
@@ -655,6 +859,15 @@ macro_rules! export_agent {
                                     .unwrap_or_default(),
                             }).collect(),
                             completed_results: completed_results.into_iter().map(rust_outcome_to_wit).collect(),
+                        })
+                    }
+                    $crate::ProtocolEvent::Custom { event_type, extra } => {
+                        wit::ProtocolEvent::Error(wit::ErrorEvent {
+                            message: format!(
+                                "custom protocol event '{event_type}' is not supported by the current wasm WIT ABI: {}",
+                                $crate::_serde_json::to_string(&extra).unwrap_or_default()
+                            ),
+                            code: Some("unsupported_custom_event".to_string()),
                         })
                     }
                 }

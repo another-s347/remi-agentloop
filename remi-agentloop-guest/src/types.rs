@@ -158,6 +158,9 @@ pub struct Message {
     pub tool_calls: Option<Vec<ToolCallMessage>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
+    /// Optional user identifier for `Role::User` messages.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
     /// Chain-of-thought / reasoning text returned by thinking models.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning_content: Option<String>,
@@ -304,6 +307,15 @@ pub enum LoopInput {
         max_tokens: Option<u32>,
         #[serde(skip_serializing_if = "Option::is_none")]
         metadata: Option<serde_json::Value>,
+        /// Metadata to attach to the user message created from `content`.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        message_metadata: Option<serde_json::Value>,
+        /// Optional user identifier attached to the user message as the `name` field.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        user_name: Option<String>,
+        /// Initial user_state to inject into the run.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        user_state: Option<serde_json::Value>,
     },
     /// Resume from a `NeedToolExecution` with completed tool results.
     #[serde(rename = "resume")]
@@ -323,6 +335,9 @@ impl LoopInput {
             temperature: None,
             max_tokens: None,
             metadata: None,
+            message_metadata: None,
+            user_name: None,
+            user_state: None,
         }
     }
 
@@ -335,6 +350,9 @@ impl LoopInput {
             temperature: None,
             max_tokens: None,
             metadata: None,
+            message_metadata: None,
+            user_name: None,
+            user_state: None,
         }
     }
 }

@@ -2229,6 +2229,7 @@ dependencies = [
  "remi-agentloop-core",
  "remi-agentloop-guest",
  "reqwest",
+ "serde",
  "serde_json",
  "tokio",
  "tokio-stream",
