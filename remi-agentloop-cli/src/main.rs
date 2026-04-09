@@ -449,6 +449,14 @@ struct AgentloopDependencyPaths {
 }
 
 fn resolve_agentloop_dependency_paths(agent_path: &Path) -> AgentloopDependencyPaths {
+    if let Some(git_source) = resolve_agentloop_git_source(agent_path) {
+        let dependency = git_dependency_spec(&git_source);
+        return AgentloopDependencyPaths {
+            remi_agentloop_dep: dependency.clone(),
+            remi_agentloop_macros_dep: dependency,
+        };
+    }
+
     if let Some(repo_root) = find_local_agentloop_repo(agent_path) {
         let remi_agentloop = toml_path_string(&repo_root.join("remi-agentloop"));
         let remi_agentloop_macros = toml_path_string(&repo_root.join("remi-agentloop-macros"));
@@ -464,6 +472,54 @@ fn resolve_agentloop_dependency_paths(agent_path: &Path) -> AgentloopDependencyP
         remi_agentloop_macros_dep:
             "git = \"https://github.com/another-s347/remi-agentloop.git\"".to_string(),
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GitDependencySource {
+    git: String,
+    rev: Option<String>,
+    branch: Option<String>,
+    tag: Option<String>,
+}
+
+fn resolve_agentloop_git_source(agent_path: &Path) -> Option<GitDependencySource> {
+    let cargo_toml = agent_path.join("Cargo.toml");
+    let content = std::fs::read_to_string(cargo_toml).ok()?;
+    let doc = content.parse::<toml_edit::DocumentMut>().ok()?;
+    let dependency = &doc["dependencies"]["remi-agentloop"];
+    let git = dependency.get("git")?.as_str()?.to_string();
+
+    Some(GitDependencySource {
+        git,
+        rev: dependency
+            .get("rev")
+            .and_then(toml_edit::Item::as_str)
+            .map(ToOwned::to_owned),
+        branch: dependency
+            .get("branch")
+            .and_then(toml_edit::Item::as_str)
+            .map(ToOwned::to_owned),
+        tag: dependency
+            .get("tag")
+            .and_then(toml_edit::Item::as_str)
+            .map(ToOwned::to_owned),
+    })
+}
+
+fn git_dependency_spec(source: &GitDependencySource) -> String {
+    let mut parts = vec![format!("git = \"{}\"", source.git)];
+
+    if let Some(rev) = &source.rev {
+        parts.push(format!("rev = \"{rev}\""));
+    }
+    if let Some(branch) = &source.branch {
+        parts.push(format!("branch = \"{branch}\""));
+    }
+    if let Some(tag) = &source.tag {
+        parts.push(format!("tag = \"{tag}\""));
+    }
+
+    parts.join(", ")
 }
 
 fn find_local_agentloop_repo(agent_path: &Path) -> Option<PathBuf> {
@@ -485,4 +541,50 @@ fn toml_path_string(path: &Path) -> String {
         .strip_prefix(r"\\?\")
         .unwrap_or(&path.display().to_string())
         .replace('\\', "/")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{git_dependency_spec, resolve_agentloop_dependency_paths, GitDependencySource};
+
+    #[test]
+    fn git_dependency_spec_preserves_rev() {
+        let source = GitDependencySource {
+            git: "https://github.com/another-s347/remi-agentloop.git".to_string(),
+            rev: Some("fc5c9c2f709c905101245a58f13299bef49176f7".to_string()),
+            branch: None,
+            tag: None,
+        };
+
+        assert_eq!(
+            git_dependency_spec(&source),
+            "git = \"https://github.com/another-s347/remi-agentloop.git\", rev = \"fc5c9c2f709c905101245a58f13299bef49176f7\""
+        );
+    }
+
+    #[test]
+    fn generated_entry_matches_explicit_agent_git_dependency() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let agent_dir = temp.path().join("remi-agent-rs");
+        std::fs::create_dir_all(&agent_dir).expect("create agent dir");
+        std::fs::write(
+            agent_dir.join("Cargo.toml"),
+            r#"[package]
+name = "remi-agent-rs"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+remi-agentloop = { git = "https://github.com/another-s347/remi-agentloop.git", rev = "fc5c9c2f709c905101245a58f13299bef49176f7", default-features = false }
+"#,
+        )
+        .expect("write cargo toml");
+
+        let resolved = resolve_agentloop_dependency_paths(&agent_dir);
+        assert_eq!(
+            resolved.remi_agentloop_dep,
+            "git = \"https://github.com/another-s347/remi-agentloop.git\", rev = \"fc5c9c2f709c905101245a58f13299bef49176f7\""
+        );
+        assert_eq!(resolved.remi_agentloop_dep, resolved.remi_agentloop_macros_dep);
+    }
 }
