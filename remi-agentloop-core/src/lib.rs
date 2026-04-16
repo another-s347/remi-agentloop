@@ -70,6 +70,8 @@
 // ── Re-exports ────────────────────────────────────────────────────────────────
 
 pub use remi_agentloop_macros::tool as tool_macro;
+pub use schemars;
+pub use serde;
 
 // Core
 pub mod agent;
@@ -121,17 +123,22 @@ pub mod prelude {
     pub use crate::protocol::{CustomProtocolEvent, ProtocolAgent, ProtocolError, ProtocolEvent};
     pub use crate::state::{step, Action, AgentPhase, AgentState, StepConfig, StepEvent};
     pub use crate::tool::{
-        registry::{DefaultToolRegistry, ToolRegistry},
-        InterruptRequest, Tool, ToolContext, ToolDefinition, ToolDefinitionContext, ToolOutput,
-        ToolResult,
+        external::{ExternalToolAgent, ExternalToolHook, ExternalToolLayer},
+        registry::{
+            AgentEventEnvelope, DefaultToolRegistry, NoopToolLayerHook, ToolLayer,
+            ToolLayerAgent, ToolLayerHook, ToolRegistry,
+        },
+        InterruptRequest, Tool, ToolDefinition, ToolDefinitionContext, ToolOutput, ToolResult,
     };
     pub use crate::tracing::stdout::StdoutTracer;
     pub use crate::tracing::{DynTracer, Tracer};
     pub use crate::types::{
-        AgentEvent, ChatInput, ChatRequest, ChatResponseChunk, Content, ContentPart, InterruptId,
-        InterruptInfo, LoopInput, Message, MessageId, ParsedToolCall, ResumePayload, Role, RunId,
-        SubSessionEvent, SubSessionEventPayload, ThreadId, ToolCallOutcome, ToolCallResult,
-        ChatReplayCursor, ChatSessionBundle,
+        AgentEvent, CancellationToken, ChatCtx, ChatCtxState, ChatInput, ChatRequest,
+        ChatResponseChunk, ChatRuntime, Content, ContentPart, InterruptId, InterruptInfo,
+        LoopInput, Message, MessageId, ModelRequest, ParsedToolCall, ResumePayload, ResumeRoute,
+        Role, RunId, SpanId, SpanKind, SpanNode, ThreadId, ToolCallFrame, ToolCallOutcome,
+        ToolCallResult, ChatReplayCursor, ChatSessionBundle, SubSessionEvent,
+        SubSessionEventPayload,
     };
     pub use crate::union::{Union2, Union3, Union4};
 }

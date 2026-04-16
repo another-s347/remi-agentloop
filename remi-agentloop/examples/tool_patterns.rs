@@ -33,25 +33,21 @@ async fn greet(name: String) -> String {
 
 /// Search the web for information. Marks search as done in user_state.
 #[tool]
-async fn web_search(query: String, ctx: &ToolContext) -> String {
+async fn web_search(query: String, ctx: &ChatCtx) -> String {
     // 读 user_state
-    let prev_count = {
-        let us = ctx.user_state.read().unwrap();
-        us["search_count"].as_u64().unwrap_or(0)
-    };
+    let prev_count = ctx.with_user_state(|us| us["search_count"].as_u64().unwrap_or(0));
 
     // 写 user_state — 标记搜索完成，后续 tool 可据此解锁
-    {
-        let mut us = ctx.user_state.write().unwrap();
+    ctx.update_user_state(|us| {
         us["search_done"] = serde_json::json!(true);
         us["search_count"] = serde_json::json!(prev_count + 1);
         us["last_query"] = serde_json::json!(query);
-    }
+    });
 
     // 也可以读 ctx 的其他字段
-    let _thread = &ctx.thread_id;
-    let _run = &ctx.run_id;
-    let _model = &ctx.config.model;
+    let _thread = ctx.thread_id();
+    let _run = ctx.run_id();
+    let _metadata = ctx.metadata();
 
     format!("Found results for: {query} (search #{})", prev_count + 1)
 }
@@ -124,25 +120,20 @@ async fn transfer_funds(
 #[tool]
 async fn analyze_data(
     dataset: String,
-    ctx: &ToolContext,
+    ctx: &ChatCtx,
 ) -> ToolResult<impl futures::Stream<Item = ToolOutput>> {
     // 也可以在流式 tool 里写 user_state
-    {
-        let mut us = ctx.user_state.write().unwrap();
+    ctx.update_user_state(|us| {
         us["analysis_running"] = serde_json::json!(true);
-    }
+    });
 
     ToolResult::Output(async_stream::stream! {
         // 流式发送进度
         yield ToolOutput::Delta(format!("Loading dataset: {dataset}...\n"));
 
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         yield ToolOutput::Delta("Preprocessing data...\n".to_string());
 
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         yield ToolOutput::Delta("Running analysis...\n".to_string());
-
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
         // 最终结果
         yield ToolOutput::text(format!("Analysis complete: {dataset} contains 42 records."));
@@ -158,8 +149,12 @@ async fn analyze_data(
 struct SummarizeTool;
 
 impl Tool for SummarizeTool {
-    fn name(&self) -> &str { "summarize" }
-    fn description(&self) -> &str { "Summarize previous search results. Only available after a search." }
+    fn name(&self) -> &str {
+        "summarize"
+    }
+    fn description(&self) -> &str {
+        "Summarize previous search results. Only available after a search."
+    }
     fn parameters_schema(&self) -> serde_json::Value {
         serde_json::json!({
             "type": "object",
@@ -179,13 +174,14 @@ impl Tool for SummarizeTool {
         &self,
         arguments: serde_json::Value,
         _resume: Option<ResumePayload>,
-        ctx: &ToolContext,
-    ) -> impl std::future::Future<Output = Result<ToolResult<impl futures::Stream<Item = ToolOutput>>, AgentError>> {
+        ctx: &ChatCtx,
+    ) -> impl std::future::Future<
+        Output = Result<ToolResult<impl futures::Stream<Item = ToolOutput>>, AgentError>,
+    > {
         async move {
-            let last_query = {
-                let us = ctx.user_state.read().unwrap();
+            let last_query = ctx.with_user_state(|us| {
                 us["last_query"].as_str().unwrap_or("unknown").to_string()
-            };
+            });
             let max_len = arguments["max_length"].as_u64().unwrap_or(200);
 
             let summary = format!(
@@ -208,8 +204,12 @@ impl Tool for SummarizeTool {
 struct FullFeatureTool;
 
 impl Tool for FullFeatureTool {
-    fn name(&self) -> &str { "full_feature" }
-    fn description(&self) -> &str { "Demonstrates streaming output, interrupt, and state mutation." }
+    fn name(&self) -> &str {
+        "full_feature"
+    }
+    fn description(&self) -> &str {
+        "Demonstrates streaming output, interrupt, and state mutation."
+    }
     fn parameters_schema(&self) -> serde_json::Value {
         serde_json::json!({
             "type": "object",
@@ -229,8 +229,10 @@ impl Tool for FullFeatureTool {
         &self,
         arguments: serde_json::Value,
         resume: Option<ResumePayload>,
-        ctx: &ToolContext,
-    ) -> impl std::future::Future<Output = Result<ToolResult<impl futures::Stream<Item = ToolOutput>>, AgentError>> {
+        ctx: &ChatCtx,
+    ) -> impl std::future::Future<
+        Output = Result<ToolResult<impl futures::Stream<Item = ToolOutput>>, AgentError>,
+    > {
         async move {
             let action = arguments["action"].as_str().unwrap_or("quick").to_string();
 
@@ -243,10 +245,9 @@ impl Tool for FullFeatureTool {
             }
 
             // 写 user_state
-            {
-                let mut us = ctx.user_state.write().unwrap();
+            ctx.update_user_state(|us| {
                 us["last_action"] = serde_json::json!(&action);
-            }
+            });
 
             // 所有 Output 路径统一在一个 stream 里：resume / stream / quick
             let is_stream = action == "stream";
@@ -258,7 +259,6 @@ impl Tool for FullFeatureTool {
                 } else if is_stream {
                     for i in 1..=5 {
                         yield ToolOutput::Delta(format!("Step {i}/5...\n"));
-                        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
                     }
                     yield ToolOutput::text("All 5 steps complete!".to_string());
                 } else {
@@ -278,7 +278,7 @@ impl Tool for FullFeatureTool {
 async fn deploy_service(
     service_name: String,
     environment: String,
-    ctx: &ToolContext,
+    ctx: &ChatCtx,
     resume: Option<ResumePayload>,
 ) -> ToolResult<impl futures::Stream<Item = ToolOutput>> {
     if let Some(payload) = resume {
@@ -287,21 +287,18 @@ async fn deploy_service(
         // 审批通过 → 流式部署进度；否则取消
         // 写入 user_state
         if approved {
-            let mut us = ctx.user_state.write().unwrap();
-            us["deploying"] = serde_json::json!(true);
-            us["deploy_target"] = serde_json::json!(format!("{service_name}@{environment}"));
+            ctx.update_user_state(|us| {
+                us["deploying"] = serde_json::json!(true);
+                us["deploy_target"] = serde_json::json!(format!("{service_name}@{environment}"));
+            });
         }
 
         ToolResult::Output(async_stream::stream! {
             if approved {
                 yield ToolOutput::Delta(format!("Deploying {service_name} to {environment}...\n"));
-                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
                 yield ToolOutput::Delta("Building image...\n".to_string());
-                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
                 yield ToolOutput::Delta("Pushing to registry...\n".to_string());
-                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
                 yield ToolOutput::Delta("Rolling out...\n".to_string());
-                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
                 yield ToolOutput::text(format!("✓ {service_name} deployed to {environment} successfully!"));
             } else {
                 yield ToolOutput::text("Deployment cancelled by operator.".to_string());

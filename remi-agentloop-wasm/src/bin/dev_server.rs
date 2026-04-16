@@ -165,10 +165,13 @@ fn make_handler(
 ) -> impl Fn(
     LoopInput,
 ) -> std::pin::Pin<
-    Box<dyn std::future::Future<Output = Result<ReceiverStream<ProtocolEvent>, ProtocolError>> + Send>,
+    Box<
+        dyn std::future::Future<Output = Result<ReceiverStream<ProtocolEvent>, ProtocolError>>
+            + Send,
+    >,
 > + Send
-+ Sync
-+ 'static {
+       + Sync
+       + 'static {
     move |req: LoopInput| {
         let slot = slot.clone();
         Box::pin(async move {
@@ -192,7 +195,7 @@ fn make_handler(
                     .build()
                     .unwrap();
                 rt.block_on(async move {
-                    match agent.chat(req).await {
+                    match agent.chat(remi_agentloop::types::ChatCtx::default(), req).await {
                         Ok(stream) => {
                             let mut stream = std::pin::pin!(stream);
                             while let Some(event) = stream.next().await {
@@ -231,20 +234,19 @@ async fn watch_loop(
 ) {
     let (change_tx, mut change_rx) = tokio::sync::mpsc::channel::<()>(4);
 
-    let mut watcher =
-        notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
-            if let Ok(event) = res {
-                let relevant = event.paths.iter().any(|p| {
-                    p.extension()
-                        .map(|e| e == "rs" || e == "toml")
-                        .unwrap_or(false)
-                });
-                if relevant {
-                    let _ = change_tx.blocking_send(());
-                }
+    let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
+        if let Ok(event) = res {
+            let relevant = event.paths.iter().any(|p| {
+                p.extension()
+                    .map(|e| e == "rs" || e == "toml")
+                    .unwrap_or(false)
+            });
+            if relevant {
+                let _ = change_tx.blocking_send(());
             }
-        })
-        .expect("Failed to create file watcher");
+        }
+    })
+    .expect("Failed to create file watcher");
 
     watcher
         .watch(&agent_path, RecursiveMode::Recursive)
@@ -256,8 +258,7 @@ async fn watch_loop(
         }
 
         // Debounce: drain events that arrive within 500 ms
-        let debounce_until =
-            tokio::time::Instant::now() + Duration::from_millis(500);
+        let debounce_until = tokio::time::Instant::now() + Duration::from_millis(500);
         loop {
             match tokio::time::timeout_at(debounce_until, change_rx.recv()).await {
                 Ok(Some(())) => continue,

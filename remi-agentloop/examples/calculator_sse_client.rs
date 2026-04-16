@@ -25,7 +25,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("{}", "─".repeat(50));
 
     let stream = client
-        .chat("What is (3 + 7) * 2^4? Show step-by-step.".into())
+        .chat(
+            ChatCtx::default(),
+            "What is (3 + 7) * 2^4? Show step-by-step.".into(),
+        )
         .await
         .map_err(|e| format!("Failed to connect: {e}"))?;
     let mut stream = std::pin::pin!(stream);
@@ -37,7 +40,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!();
                 print!("  [tool: {name}(");
             }
-            ProtocolEvent::ToolCallDelta { arguments_delta, .. } => {
+            ProtocolEvent::ToolCallDelta {
+                arguments_delta, ..
+            } => {
                 print!("{arguments_delta}");
             }
             ProtocolEvent::ToolResult { name, result, .. } => {
@@ -81,7 +86,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     let stream = logged_client
-        .chat("What is 5 + 3?".into())
+        .chat(ChatCtx::default(), "What is 5 + 3?".into())
         .await
         .map_err(|e| format!("Failed to connect: {e}"))?;
     let mut stream = std::pin::pin!(stream);

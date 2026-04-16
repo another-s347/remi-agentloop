@@ -76,7 +76,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .build()
                     .unwrap();
                 rt.block_on(async move {
-                    match agent.chat(req).await {
+                    match agent.chat(ChatCtx::default(), req).await {
                         Ok(stream) => {
                             let mut stream = std::pin::pin!(stream);
                             while let Some(event) = stream.next().await {

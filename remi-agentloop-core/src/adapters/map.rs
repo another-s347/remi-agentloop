@@ -1,6 +1,7 @@
-use std::future::Future;
-use futures::{Stream, StreamExt};
 use crate::agent::Agent;
+use crate::types::ChatCtx;
+use futures::{Stream, StreamExt};
+use std::future::Future;
 
 // ── MapResponse ───────────────────────────────────────────────────────────────
 
@@ -14,10 +15,14 @@ impl<A: Agent, F: Fn(A::Response) -> R + Clone, R> Agent for MapResponse<A, F> {
     type Response = R;
     type Error = A::Error;
 
-    fn chat(&self, req: Self::Request) -> impl Future<Output = Result<impl Stream<Item = R>, Self::Error>> {
+    fn chat(
+        &self,
+        ctx: ChatCtx,
+        req: Self::Request,
+    ) -> impl Future<Output = Result<impl Stream<Item = R>, Self::Error>> {
         let f = self.f.clone();
         async move {
-            let stream = self.inner.chat(req).await?;
+            let stream = self.inner.chat(ctx, req).await?;
             Ok(stream.map(move |item| f(item)))
         }
     }
@@ -36,9 +41,13 @@ impl<A: Agent, F: Fn(NewReq) -> A::Request + Clone, NewReq> Agent for MapRequest
     type Response = A::Response;
     type Error = A::Error;
 
-    fn chat(&self, req: NewReq) -> impl Future<Output = Result<impl Stream<Item = A::Response>, Self::Error>> {
+    fn chat(
+        &self,
+        ctx: ChatCtx,
+        req: NewReq,
+    ) -> impl Future<Output = Result<impl Stream<Item = A::Response>, Self::Error>> {
         let mapped = (self.f)(req);
-        self.inner.chat(mapped)
+        self.inner.chat(ctx, mapped)
     }
 }
 
@@ -54,8 +63,12 @@ impl<A: Agent, F: Fn(A::Error) -> NewErr + Clone, NewErr> Agent for MapErr<A, F>
     type Response = A::Response;
     type Error = NewErr;
 
-    fn chat(&self, req: Self::Request) -> impl Future<Output = Result<impl Stream<Item = A::Response>, NewErr>> {
+    fn chat(
+        &self,
+        ctx: ChatCtx,
+        req: Self::Request,
+    ) -> impl Future<Output = Result<impl Stream<Item = A::Response>, NewErr>> {
         let f = self.f.clone();
-        async move { self.inner.chat(req).await.map_err(f) }
+        async move { self.inner.chat(ctx, req).await.map_err(f) }
     }
 }

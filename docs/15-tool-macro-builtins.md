@@ -25,10 +25,10 @@ impl Tool for MyTool {
 
 ### 2.1 基本用法
 
-将普通 async 函数标注为 Tool。宏自动生成 `Tool` trait impl，从函数签名推导 JSON Schema，从 doc comment 提取 description：
+将普通 async 函数标注为 Tool。宏自动生成 `Tool` trait impl，从函数签名生成一个内部参数 struct，并通过 `serde + schemars` 自动推导 JSON Schema；doc comment 会提取为 description：
 
 ```rust
-use remi_agentloop::tool;
+use remi_agentloop::tool_macro as tool;
 
 /// Search the web for information
 #[tool]
@@ -36,7 +36,6 @@ async fn web_search(
     /// The search query string
     query: String,
     /// Maximum number of results to return
-    #[tool(default = 10)]
     max_results: Option<u32>,
 ) -> Result<String, AgentError> {
     let results = do_search(&query, max_results.unwrap_or(10)).await;
@@ -45,6 +44,8 @@ async fn web_search(
 ```
 
 > 当前 `#[tool]` 宏仍然只生成静态 `description()`。如果某个 tool 需要根据运行时 `metadata` / `user_state` 动态生成发送给模型的 `extra_prompt`，请改为手写 `Tool` impl 并覆写 `extra_prompt(&ToolDefinitionContext)`。
+>
+> 当前实现不支持 `#[tool(default = ...)]`、`#[tool(name = ...)]`、`#[tool(description = ...)]` 这类自定义属性；name 固定来自函数名，schema 默认值和高级约束应通过显式参数类型或手写 `Tool` impl 表达。
 
 宏展开后等价于：
 
@@ -57,34 +58,15 @@ impl Tool for WebSearch {
     fn description(&self) -> &str { "Search the web for information" }
 
     fn parameters_schema(&self) -> serde_json::Value {
-        serde_json::json!({
-            "type": "object",
-            "properties": {
-                "query": {
-                    "type": "string",
-                    "description": "The search query string"
-                },
-                "max_results": {
-                    "type": "integer",
-                    "description": "Maximum number of results to return",
-                    "default": 10
-                }
-            },
-            "required": ["query"]
-        })
+        remi_agentloop::tool::schema_for_type::<WebSearchArgs>()
     }
 
     fn execute(&self, arguments: serde_json::Value)
         -> impl Future<Output = Result<ToolResult<impl Stream<Item = ToolOutput>>, AgentError>>
     {
         async move {
-            let query: String = serde_json::from_value(arguments["query"].clone())
-                .map_err(|e| AgentError::ToolExecution {
-                    tool_name: "web_search".into(),
-                    message: format!("Invalid 'query': {e}"),
-                })?;
-            let max_results: Option<u32> = arguments.get("max_results")
-                .and_then(|v| serde_json::from_value(v.clone()).ok());
+            let WebSearchArgs { query, max_results } =
+                remi_agentloop::tool::parse_arguments("web_search", arguments)?;
 
             let result = web_search_impl(query, max_results).await?;
 
@@ -96,10 +78,20 @@ impl Tool for WebSearch {
 }
 
 // 原始函数保留为内部实现
+#[derive(Deserialize, JsonSchema)]
+struct WebSearchArgs {
+    #[schemars(description = "The search query string")]
+    query: String,
+    #[schemars(description = "Maximum number of results to return")]
+    max_results: Option<u32>,
+}
+
 async fn web_search_impl(query: String, max_results: Option<u32>) -> Result<String, AgentError> {
     // ... 原始函数体
 }
 ```
+
+这里的 `WebSearchArgs` 由宏自动生成，用户无需手写。关键点是 schema 生成和参数解析都来自同一个 Rust 类型，避免手写 `parameters_schema()` 与运行时 `.as_str()` / `.as_u64()` 漂移。
 
 ### 2.2 流式返回
 
@@ -120,9 +112,9 @@ async fn analyze_data(
 }
 ```
 
-### 2.3 带 ToolContext
+### 2.3 带 ChatCtx
 
-函数参数中包含 `ctx: &ToolContext` 时，宏自动生成 `execute_with_context` 而非 `execute`：
+函数参数中包含 `ctx: &ChatCtx` 时，宏会自动把运行时上下文透传给函数体：
 
 ```rust
 /// Get weather for a city using the configured API key
@@ -130,26 +122,26 @@ async fn analyze_data(
 async fn get_weather(
     /// City name
     city: String,
-    ctx: &ToolContext,
+    ctx: &ChatCtx,
 ) -> Result<String, AgentError> {
-    let api_key = ctx.config.extra["weather_api_key"]
-        .as_str()
-        .ok_or(AgentError::ToolExecution {
-            tool_name: "get_weather".into(),
-            message: "Missing weather_api_key".into(),
-        })?;
-    let result = fetch_weather(api_key, &city).await;
+    let region = ctx
+        .metadata()
+        .and_then(|meta| meta["weather_region"].as_str().map(str::to_owned))
+        .unwrap_or_else(|| "global".to_string());
+    let result = fetch_weather(&city, &region).await;
     Ok(result)
 }
 ```
 
-### 2.4 带 Interrupt
+`ChatCtx` 负责共享 `metadata`、`user_state`、取消信号和调用链上下文。它不是 schema 的一部分，因此会从自动生成的参数 struct 中排除。
 
-使用 `#[tool(interrupt)]` 标记可能中断的 tool。函数返回 `ToolResult<impl Stream<Item = ToolOutput>>`，根据业务逻辑决定走 `Output`（流式执行）还是 `Interrupt`（中断请求）路径：
+### 2.4 返回 ToolResult
+
+函数直接返回 `ToolResult<...>` 时，宏会保留这条控制流，让工具自行决定走 `Output` 还是 `Interrupt` 路径：
 
 ```rust
 /// Process a payment, requires approval for amounts > $100
-#[tool(interrupt)]
+#[tool]
 async fn process_payment(
     /// Payment amount in dollars
     amount: f64,
@@ -172,27 +164,30 @@ async fn process_payment(
 }
 ```
 
-> **类型分离**：`#[tool(interrupt)]` 生成的 `execute` 返回 `Result<ToolResult<impl Stream<Item = ToolOutput>>, AgentError>`。`ToolResult::Interrupt` 路径不包含任何 stream，与 `ToolResult::Output` 在类型层面彻底分离。
+> 当前实现通过返回类型推断 `ToolResult` 路径，不依赖 `#[tool(interrupt)]` 属性。
 
-### 2.5 自定义名称 / 描述
+### 2.5 当前支持范围
+
+当前宏稳定支持：
+
+- doc comment -> `description()`
+- 普通参数 -> 自动生成内部 args struct
+- `Option<T>` -> 从 `required` 中移除
+- `ctx: &ChatCtx` / `resume: Option<ResumePayload>` -> 作为特殊运行时参数处理
+- 返回普通值、`Content`、`ToolResult<T>`、`ToolResult<Stream<...>>`
+
+当前未实现：
+
+- 自定义 tool 名称或 description attribute
+- 参数默认值 attribute
+- 直接在宏属性里声明 schema override
+
+### 2.6 Enum / 嵌套类型参数
+
+Rust enum 或嵌套 struct 只要能 `Deserialize + JsonSchema`，就会通过 schemars 自动映射进 JSON Schema：
 
 ```rust
-/// This doc comment is ignored when name/description are explicit
-#[tool(name = "run_query", description = "Execute a SQL query against the database")]
-async fn execute_sql_query(
-    /// SQL query string
-    sql: String,
-) -> Result<String, AgentError> {
-    // ...
-}
-```
-
-### 2.6 Enum 参数
-
-Rust enum（带 `#[derive(Deserialize)]`）自动映射为 JSON Schema `enum`：
-
-```rust
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 enum SortOrder {
     Ascending,
@@ -209,25 +204,16 @@ async fn sort_items(
 ) -> Result<String, AgentError> {
     // ...
 }
-
-// 生成的 schema:
-// "order": { "type": "string", "enum": ["ascending", "descending"], "description": "Sort direction" }
 ```
 
 ### 2.7 类型到 JSON Schema 映射规则
 
-| Rust 类型 | JSON Schema type | 备注 |
-|----------|-----------------|------|
-| `String` | `"string"` | |
-| `&str` | `"string"` | 宏展开时转为 owned |
-| `i32` / `i64` / `u32` / `u64` | `"integer"` | |
-| `f32` / `f64` | `"number"` | |
-| `bool` | `"boolean"` | |
-| `Vec<T>` | `{ "type": "array", "items": T }` | 递归 |
-| `Option<T>` | T 的 schema | 从 `required` 移除 |
-| `serde_json::Value` | `{}` (any) | 不限制 |
-| `#[derive(Deserialize)] struct` | `"object"` + 递归 properties | 嵌套对象 |
-| `#[derive(Deserialize)] enum` | `"string"` + `enum` 值列表 | serde rename_all 感知 |
+宏不再维护一套手写的原始类型映射表，而是交给 schemars 处理。实际效果取决于参数类型的 `JsonSchema` 实现以及对应的 serde 属性：
+
+- `String`、数字、布尔、数组、`Option<T>` 等标准类型由 schemars 内建支持
+- `&str` 会在宏展开时落成内部 `String` 字段，再在函数体里绑定回 `&str`
+- 自定义 struct / enum 建议显式 `derive(Deserialize, JsonSchema)`
+- `#[serde(rename = ...)]`、`#[serde(rename_all = ...)]`、`#[serde(default)]` 会反映到生成的 schema 中
 
 ### 2.8 宏注册到 Builder
 
@@ -266,15 +252,17 @@ proc-macro = true
 syn = { version = "2", features = ["full"] }
 quote = "1"
 proc-macro2 = "1"
+schemars = "1"
 ```
 
 宏处理步骤：
 1. 解析函数签名（`syn::ItemFn`）
 2. 提取 doc comment → `description`
 3. 函数名 → `name`（snake_case）
-4. 遍历参数：跳过 `&ToolContext`，其余映射为 JSON Schema properties
-5. `Option<T>` 参数不加入 `required`
-6. 生成 `struct` + `impl Tool` + 保留原始函数体
+4. 遍历参数：跳过 `&ChatCtx` / `Option<ResumePayload>`，其余生成内部 args struct 字段
+5. 用 `schemars::JsonSchema` 为内部 args struct 生成 JSON Schema
+6. 用 `serde_json::from_value` 统一解码为内部 args struct
+7. 生成 `struct` + `impl Tool` + 保留原始函数体
 
 ---
 
@@ -938,24 +926,22 @@ impl Tool for VirtualFsTool {
 
 ```rust
 use remi_agentloop::prelude::*;
-use remi_agentloop::tools::{BashTool, FsTool, VirtualFsTool};
+use remi_agentloop::tool_macro as tool;
+use std::time::Duration;
 
 // Native——编程 Agent
 let agent = AgentBuilder::new()
     .model(model)
     .system("You are a coding assistant. Use bash and fs tools to help the user.")
-    .tool(BashTool::new()
-        .with_timeout(Duration::from_secs(60))
-        .with_working_dir("/home/user/project"))
-    .tool(FsTool::new("/home/user/project").writable())
+    .tool(BashTool)
+    .tool(LocalFsWriteTool)
     .build();
 
 // WASM Guest——沙箱内执行
 let agent = AgentBuilder::new()
     .model(model)
     .system("You are a code generator.")
-    .tool(VirtualFsTool::new()
-        .with_file("template.rs", include_str!("template.rs")))
+    .tool(VirtualFsTool::read())
     .build();
 
 // 混合——宏定义 tool + 内置 tool
@@ -963,7 +949,7 @@ let agent = AgentBuilder::new()
 async fn analyze_code(
     /// Path to the source file
     path: String,
-    ctx: &ToolContext,
+    ctx: &ChatCtx,
 ) -> Result<String, AgentError> {
     // 自定义逻辑
     Ok("analysis complete".into())
@@ -971,9 +957,9 @@ async fn analyze_code(
 
 let agent = AgentBuilder::new()
     .model(model)
-    .tool(BashTool::new())
-    .tool(FsTool::new(".").read_only())
-    .tool(AnalyzeCode)  // 宏生成的 tool
+    .tool(BashTool)
+    .tool(LocalFsReadTool)
+    .tool(AnalyzeCode::new())  // 宏生成的 tool
     .build();
 ```
 
@@ -984,7 +970,7 @@ let agent = AgentBuilder::new()
 ```
 src/
 ├── tool/
-│   ├── mod.rs          # Tool trait, ToolDefinition, ToolContext
+│   ├── mod.rs          # Tool trait, ToolDefinition, ChatCtx-aware helpers
 │   ├── registry.rs     # ToolRegistry, DynTool
 │   ├── bash.rs         # BashTool          [feature: tool-bash]
 │   ├── fs.rs           # FsTool            [feature: tool-fs]

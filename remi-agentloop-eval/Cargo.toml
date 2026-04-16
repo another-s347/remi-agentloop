@@ -1,0 +1,14 @@
+[package]
+name = "remi-agentloop-eval"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Replay, experiment, and evaluation helpers for remi-agentloop"
+
+[dependencies]
+remi-core = { path = "../remi-agentloop-core", package = "remi-agentloop-core", default-features = false }
+
+futures = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }

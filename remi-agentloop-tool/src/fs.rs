@@ -6,8 +6,8 @@
 use async_stream::stream;
 use futures::Stream;
 use remi_core::error::AgentError;
-use remi_core::tool::{Tool, ToolContext, ToolOutput, ToolResult};
-use remi_core::types::ResumePayload;
+use remi_core::tool::{Tool, ToolOutput, ToolResult};
+use remi_core::types::{ChatCtx, ResumePayload};
 
 // ── LocalFsReadTool ───────────────────────────────────────────────────────────
 
@@ -15,7 +15,9 @@ use remi_core::types::ResumePayload;
 pub struct LocalFsReadTool;
 
 impl Tool for LocalFsReadTool {
-    fn name(&self) -> &str { "fs_read" }
+    fn name(&self) -> &str {
+        "fs_read"
+    }
     fn description(&self) -> &str {
         "Read the full contents of a file on the host filesystem and return it as UTF-8."
     }
@@ -28,11 +30,16 @@ impl Tool for LocalFsReadTool {
             "required": ["path"]
         })
     }
-    fn execute(&self, arguments: serde_json::Value, _resume: Option<ResumePayload>, _ctx: &ToolContext)
-        -> impl std::future::Future<Output = Result<ToolResult<impl Stream<Item = ToolOutput>>, AgentError>>
+    fn execute(
+        &self,
+        arguments: serde_json::Value,
+        _resume: Option<ResumePayload>,
+        _ctx: ChatCtx,
+    ) -> impl std::future::Future<Output = Result<ToolResult<impl Stream<Item = ToolOutput>>, AgentError>>
     {
         async move {
-            let path = arguments["path"].as_str()
+            let path = arguments["path"]
+                .as_str()
                 .ok_or_else(|| AgentError::tool("fs_read", "missing 'path'"))?
                 .to_string();
             Ok(ToolResult::Output(stream! {
@@ -51,7 +58,9 @@ impl Tool for LocalFsReadTool {
 pub struct LocalFsWriteTool;
 
 impl Tool for LocalFsWriteTool {
-    fn name(&self) -> &str { "fs_write" }
+    fn name(&self) -> &str {
+        "fs_write"
+    }
     fn description(&self) -> &str {
         "Write text content to a file on the host filesystem, creating or overwriting it. \
          Parent directory must exist."
@@ -66,14 +75,20 @@ impl Tool for LocalFsWriteTool {
             "required": ["path", "content"]
         })
     }
-    fn execute(&self, arguments: serde_json::Value, _resume: Option<ResumePayload>, _ctx: &ToolContext)
-        -> impl std::future::Future<Output = Result<ToolResult<impl Stream<Item = ToolOutput>>, AgentError>>
+    fn execute(
+        &self,
+        arguments: serde_json::Value,
+        _resume: Option<ResumePayload>,
+        _ctx: ChatCtx,
+    ) -> impl std::future::Future<Output = Result<ToolResult<impl Stream<Item = ToolOutput>>, AgentError>>
     {
         async move {
-            let path = arguments["path"].as_str()
+            let path = arguments["path"]
+                .as_str()
                 .ok_or_else(|| AgentError::tool("fs_write", "missing 'path'"))?
                 .to_string();
-            let content = arguments["content"].as_str()
+            let content = arguments["content"]
+                .as_str()
                 .ok_or_else(|| AgentError::tool("fs_write", "missing 'content'"))?
                 .to_string();
             let bytes = content.len();
@@ -93,7 +108,9 @@ impl Tool for LocalFsWriteTool {
 pub struct LocalFsCreateTool;
 
 impl Tool for LocalFsCreateTool {
-    fn name(&self) -> &str { "fs_mkdir" }
+    fn name(&self) -> &str {
+        "fs_mkdir"
+    }
     fn description(&self) -> &str {
         "Create a directory on the host filesystem. \
          Set recursive=true to create all missing parent directories (mkdir -p)."
@@ -108,11 +125,16 @@ impl Tool for LocalFsCreateTool {
             "required": ["path"]
         })
     }
-    fn execute(&self, arguments: serde_json::Value, _resume: Option<ResumePayload>, _ctx: &ToolContext)
-        -> impl std::future::Future<Output = Result<ToolResult<impl Stream<Item = ToolOutput>>, AgentError>>
+    fn execute(
+        &self,
+        arguments: serde_json::Value,
+        _resume: Option<ResumePayload>,
+        _ctx: ChatCtx,
+    ) -> impl std::future::Future<Output = Result<ToolResult<impl Stream<Item = ToolOutput>>, AgentError>>
     {
         async move {
-            let path = arguments["path"].as_str()
+            let path = arguments["path"]
+                .as_str()
                 .ok_or_else(|| AgentError::tool("fs_mkdir", "missing 'path'"))?
                 .to_string();
             let recursive = arguments["recursive"].as_bool().unwrap_or(false);
@@ -137,7 +159,9 @@ impl Tool for LocalFsCreateTool {
 pub struct LocalFsRemoveTool;
 
 impl Tool for LocalFsRemoveTool {
-    fn name(&self) -> &str { "fs_remove" }
+    fn name(&self) -> &str {
+        "fs_remove"
+    }
     fn description(&self) -> &str {
         "Remove a file or directory from the host filesystem. \
          Set recursive=true to remove a non-empty directory and all its contents."
@@ -152,11 +176,16 @@ impl Tool for LocalFsRemoveTool {
             "required": ["path"]
         })
     }
-    fn execute(&self, arguments: serde_json::Value, _resume: Option<ResumePayload>, _ctx: &ToolContext)
-        -> impl std::future::Future<Output = Result<ToolResult<impl Stream<Item = ToolOutput>>, AgentError>>
+    fn execute(
+        &self,
+        arguments: serde_json::Value,
+        _resume: Option<ResumePayload>,
+        _ctx: ChatCtx,
+    ) -> impl std::future::Future<Output = Result<ToolResult<impl Stream<Item = ToolOutput>>, AgentError>>
     {
         async move {
-            let path = arguments["path"].as_str()
+            let path = arguments["path"]
+                .as_str()
                 .ok_or_else(|| AgentError::tool("fs_remove", "missing 'path'"))?
                 .to_string();
             let recursive = arguments["recursive"].as_bool().unwrap_or(false);
@@ -185,7 +214,9 @@ impl Tool for LocalFsRemoveTool {
 pub struct LocalFsLsTool;
 
 impl Tool for LocalFsLsTool {
-    fn name(&self) -> &str { "fs_ls" }
+    fn name(&self) -> &str {
+        "fs_ls"
+    }
     fn description(&self) -> &str {
         "List the contents of a directory on the host filesystem. \
          Returns a JSON array of entries with name, type (file/directory), and size in bytes."
@@ -199,11 +230,16 @@ impl Tool for LocalFsLsTool {
             "required": ["path"]
         })
     }
-    fn execute(&self, arguments: serde_json::Value, _resume: Option<ResumePayload>, _ctx: &ToolContext)
-        -> impl std::future::Future<Output = Result<ToolResult<impl Stream<Item = ToolOutput>>, AgentError>>
+    fn execute(
+        &self,
+        arguments: serde_json::Value,
+        _resume: Option<ResumePayload>,
+        _ctx: ChatCtx,
+    ) -> impl std::future::Future<Output = Result<ToolResult<impl Stream<Item = ToolOutput>>, AgentError>>
     {
         async move {
-            let path = arguments["path"].as_str()
+            let path = arguments["path"]
+                .as_str()
                 .ok_or_else(|| AgentError::tool("fs_ls", "missing 'path'"))?
                 .to_string();
             Ok(ToolResult::Output(stream! {
@@ -252,9 +288,19 @@ impl Tool for LocalFsLsTool {
 pub struct LocalFsToolkit;
 
 impl LocalFsToolkit {
-    pub fn read(&self)   -> LocalFsReadTool   { LocalFsReadTool }
-    pub fn write(&self)  -> LocalFsWriteTool  { LocalFsWriteTool }
-    pub fn mkdir(&self)  -> LocalFsCreateTool { LocalFsCreateTool }
-    pub fn remove(&self) -> LocalFsRemoveTool { LocalFsRemoveTool }
-    pub fn ls(&self)     -> LocalFsLsTool     { LocalFsLsTool }
+    pub fn read(&self) -> LocalFsReadTool {
+        LocalFsReadTool
+    }
+    pub fn write(&self) -> LocalFsWriteTool {
+        LocalFsWriteTool
+    }
+    pub fn mkdir(&self) -> LocalFsCreateTool {
+        LocalFsCreateTool
+    }
+    pub fn remove(&self) -> LocalFsRemoveTool {
+        LocalFsRemoveTool
+    }
+    pub fn ls(&self) -> LocalFsLsTool {
+        LocalFsLsTool
+    }
 }

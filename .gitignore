@@ -11,6 +11,8 @@
 # Generated WASM artifacts (jco transpile output, etc.)
 /browser-demo/
 /browser-llm-demo/
+examples/wasm-benchmark-guest/benchmark_guest.wasm
+typescript-sdk/assembly/build/
 
 # Editor / IDE
 .idea/

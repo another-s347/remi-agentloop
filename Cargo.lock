@@ -2080,6 +2080,7 @@ dependencies = [
  "futures",
  "ratatui",
  "remi-agentloop-core",
+ "remi-agentloop-eval",
  "remi-agentloop-macros",
  "remi-agentloop-model",
  "remi-agentloop-tool",
@@ -2122,6 +2123,7 @@ dependencies = [
  "pin-project-lite",
  "remi-agentloop-macros",
  "reqwest",
+ "schemars",
  "serde",
  "serde_json",
  "thiserror 1.0.69",
@@ -2145,12 +2147,24 @@ dependencies = [
  "remi-agentloop-tool",
  "remi-agentloop-transport",
  "reqwest",
+ "schemars",
  "serde",
  "serde_json",
  "tokio",
  "tokio-stream",
  "toml",
  "uuid",
+]
+
+[[package]]
+name = "remi-agentloop-eval"
+version = "0.1.0"
+dependencies = [
+ "futures",
+ "remi-agentloop-core",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
 ]
 
 [[package]]
@@ -2196,6 +2210,7 @@ dependencies = [
  "bashkit",
  "futures",
  "remi-agentloop-core",
+ "schemars",
  "serde",
  "serde_json",
  "tokio",

@@ -43,15 +43,11 @@ use ratatui::{
     widgets::{Block, Borders, List, ListItem, Paragraph, Wrap},
     Frame, Terminal,
 };
-use remi_core::types::Message as AgentMessage;
 use remi_agentloop_deepagent::skill::store::FileSkillStore;
 use remi_agentloop_deepagent::{
-    DeepAgentBuilder,
-    DeepAgentConfig,
-    DeepAgentEvent,
-    SkillEvent,
-    TodoEvent,
+    DeepAgentBuilder, DeepAgentConfig, DeepAgentEvent, SkillEvent, TodoEvent,
 };
+use remi_core::types::Message as AgentMessage;
 use remi_model::OpenAIClient;
 use remi_transport::ReqwestTransport;
 

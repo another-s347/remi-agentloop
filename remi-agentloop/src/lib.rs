@@ -44,8 +44,13 @@ pub use remi_agentloop_macros::tool as tool_macro;
 
 pub use remi_core::{
     adapters, agent, agent_loop, builder, checkpoint, config, context, error, interrupt, model,
-    protocol, state, tool, tracing, types, union,
+    protocol, schemars, serde, state, tool, tracing, types, union,
 };
+
+/// Eval and replay helpers for application-level experiment workflows.
+pub mod eval {
+    pub use remi_eval::*;
+}
 
 // ── Re-exports from remi-transport ────────────────────────────────────────────
 
@@ -71,6 +76,9 @@ pub mod openai {
 pub mod prelude {
     // Core
     pub use remi_core::prelude::*;
+
+    // Eval
+    pub use remi_eval::prelude::*;
 
     // Transport
     pub use remi_transport::HttpTransport;

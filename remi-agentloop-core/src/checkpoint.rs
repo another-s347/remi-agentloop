@@ -167,7 +167,10 @@ pub trait CheckpointStore {
     async fn load_latest_by_run(&self, run_id: &RunId) -> Result<Option<Checkpoint>, AgentError>;
 
     /// Load the latest checkpoint for a given thread (across all runs).
-    async fn load_latest_by_thread(&self, thread_id: &ThreadId) -> Result<Option<Checkpoint>, AgentError>;
+    async fn load_latest_by_thread(
+        &self,
+        thread_id: &ThreadId,
+    ) -> Result<Option<Checkpoint>, AgentError>;
 
     /// List all checkpoints for a run, ordered by sequence number.
     async fn list_by_run(&self, run_id: &RunId) -> Result<Vec<Checkpoint>, AgentError>;
@@ -181,10 +184,21 @@ pub trait CheckpointStore {
 pub struct NoCheckpointStore;
 
 impl CheckpointStore for NoCheckpointStore {
-    async fn save(&self, _checkpoint: Checkpoint) -> Result<(), AgentError> { Ok(()) }
-    async fn load_latest_by_run(&self, _run_id: &RunId) -> Result<Option<Checkpoint>, AgentError> { Ok(None) }
-    async fn load_latest_by_thread(&self, _thread_id: &ThreadId) -> Result<Option<Checkpoint>, AgentError> { Ok(None) }
-    async fn list_by_run(&self, _run_id: &RunId) -> Result<Vec<Checkpoint>, AgentError> { Ok(vec![]) }
+    async fn save(&self, _checkpoint: Checkpoint) -> Result<(), AgentError> {
+        Ok(())
+    }
+    async fn load_latest_by_run(&self, _run_id: &RunId) -> Result<Option<Checkpoint>, AgentError> {
+        Ok(None)
+    }
+    async fn load_latest_by_thread(
+        &self,
+        _thread_id: &ThreadId,
+    ) -> Result<Option<Checkpoint>, AgentError> {
+        Ok(None)
+    }
+    async fn list_by_run(&self, _run_id: &RunId) -> Result<Vec<Checkpoint>, AgentError> {
+        Ok(vec![])
+    }
 }
 
 // ── InMemoryCheckpointStore ───────────────────────────────────────────────────
@@ -212,36 +226,87 @@ impl InMemoryCheckpointStore {
 impl CheckpointStore for InMemoryCheckpointStore {
     async fn save(&self, checkpoint: Checkpoint) -> Result<(), AgentError> {
         let mut guard = self.inner.lock().unwrap();
-        guard.latest_by_thread.insert(checkpoint.thread_id.0.clone(), checkpoint.clone());
-        guard.by_run.entry(checkpoint.run_id.0.clone()).or_default().push(checkpoint);
+        guard
+            .latest_by_thread
+            .insert(checkpoint.thread_id.0.clone(), checkpoint.clone());
+        guard
+            .by_run
+            .entry(checkpoint.run_id.0.clone())
+            .or_default()
+            .push(checkpoint);
         Ok(())
     }
 
     async fn load_latest_by_run(&self, run_id: &RunId) -> Result<Option<Checkpoint>, AgentError> {
-        Ok(self.inner.lock().unwrap().by_run.get(&run_id.0).and_then(|v| v.last()).cloned())
+        Ok(self
+            .inner
+            .lock()
+            .unwrap()
+            .by_run
+            .get(&run_id.0)
+            .and_then(|v| v.last())
+            .cloned())
     }
 
-    async fn load_latest_by_thread(&self, thread_id: &ThreadId) -> Result<Option<Checkpoint>, AgentError> {
-        Ok(self.inner.lock().unwrap().latest_by_thread.get(&thread_id.0).cloned())
+    async fn load_latest_by_thread(
+        &self,
+        thread_id: &ThreadId,
+    ) -> Result<Option<Checkpoint>, AgentError> {
+        Ok(self
+            .inner
+            .lock()
+            .unwrap()
+            .latest_by_thread
+            .get(&thread_id.0)
+            .cloned())
     }
 
     async fn list_by_run(&self, run_id: &RunId) -> Result<Vec<Checkpoint>, AgentError> {
-        Ok(self.inner.lock().unwrap().by_run.get(&run_id.0).cloned().unwrap_or_default())
+        Ok(self
+            .inner
+            .lock()
+            .unwrap()
+            .by_run
+            .get(&run_id.0)
+            .cloned()
+            .unwrap_or_default())
     }
 }
 
 // ── Blanket impls for smart pointers ──────────────────────────────────────────
 
 impl<S: CheckpointStore> CheckpointStore for Arc<S> {
-    async fn save(&self, checkpoint: Checkpoint) -> Result<(), AgentError> { (**self).save(checkpoint).await }
-    async fn load_latest_by_run(&self, run_id: &RunId) -> Result<Option<Checkpoint>, AgentError> { (**self).load_latest_by_run(run_id).await }
-    async fn load_latest_by_thread(&self, thread_id: &ThreadId) -> Result<Option<Checkpoint>, AgentError> { (**self).load_latest_by_thread(thread_id).await }
-    async fn list_by_run(&self, run_id: &RunId) -> Result<Vec<Checkpoint>, AgentError> { (**self).list_by_run(run_id).await }
+    async fn save(&self, checkpoint: Checkpoint) -> Result<(), AgentError> {
+        (**self).save(checkpoint).await
+    }
+    async fn load_latest_by_run(&self, run_id: &RunId) -> Result<Option<Checkpoint>, AgentError> {
+        (**self).load_latest_by_run(run_id).await
+    }
+    async fn load_latest_by_thread(
+        &self,
+        thread_id: &ThreadId,
+    ) -> Result<Option<Checkpoint>, AgentError> {
+        (**self).load_latest_by_thread(thread_id).await
+    }
+    async fn list_by_run(&self, run_id: &RunId) -> Result<Vec<Checkpoint>, AgentError> {
+        (**self).list_by_run(run_id).await
+    }
 }
 
 impl<S: CheckpointStore> CheckpointStore for std::rc::Rc<S> {
-    async fn save(&self, checkpoint: Checkpoint) -> Result<(), AgentError> { (**self).save(checkpoint).await }
-    async fn load_latest_by_run(&self, run_id: &RunId) -> Result<Option<Checkpoint>, AgentError> { (**self).load_latest_by_run(run_id).await }
-    async fn load_latest_by_thread(&self, thread_id: &ThreadId) -> Result<Option<Checkpoint>, AgentError> { (**self).load_latest_by_thread(thread_id).await }
-    async fn list_by_run(&self, run_id: &RunId) -> Result<Vec<Checkpoint>, AgentError> { (**self).list_by_run(run_id).await }
+    async fn save(&self, checkpoint: Checkpoint) -> Result<(), AgentError> {
+        (**self).save(checkpoint).await
+    }
+    async fn load_latest_by_run(&self, run_id: &RunId) -> Result<Option<Checkpoint>, AgentError> {
+        (**self).load_latest_by_run(run_id).await
+    }
+    async fn load_latest_by_thread(
+        &self,
+        thread_id: &ThreadId,
+    ) -> Result<Option<Checkpoint>, AgentError> {
+        (**self).load_latest_by_thread(thread_id).await
+    }
+    async fn list_by_run(&self, run_id: &RunId) -> Result<Vec<Checkpoint>, AgentError> {
+        (**self).list_by_run(run_id).await
+    }
 }

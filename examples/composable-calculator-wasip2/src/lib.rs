@@ -165,7 +165,7 @@ impl exports::remi::agentloop::agent::Guest for ComposableCalculatorAgent {
         //    No block_on here — the async machinery is deferred entirely
         //    into per-event next() calls driven by the host.
         let event_stream = async_stream::stream! {
-            match agent.chat(input).await {
+            match agent.chat(ChatCtx::default(), input).await {
                 Ok(inner) => {
                     futures::pin_mut!(inner);
                     while let Some(event) = inner.next().await {
@@ -209,7 +209,6 @@ fn extract_config(input: &LoopInput) -> (String, String, String) {
     let meta = match input {
         LoopInput::Start { metadata, .. } => metadata.as_ref(),
         LoopInput::Resume { state, .. } => state.config.metadata.as_ref(),
-        LoopInput::Cancel { state } => state.config.metadata.as_ref(),
     };
 
     let empty = serde_json::Value::Null;

@@ -32,10 +32,9 @@ use remi_core::config::AgentConfig;
 use remi_core::context::NoStore;
 use remi_core::error::AgentError;
 use remi_core::model::ChatModel;
-use remi_core::state::AgentState;
 use remi_core::tool::registry::{DefaultToolRegistry, ToolRegistry};
-use remi_core::tool::{Tool, ToolContext, ToolDefinition, ToolDefinitionContext, ToolOutput};
-use remi_core::types::{AgentEvent, LoopInput, Message, ParsedToolCall, ToolCallOutcome};
+use remi_core::tool::{Tool, ToolDefinition, ToolDefinitionContext, ToolOutput};
+use remi_core::types::{AgentEvent, ChatCtx, LoopInput, Message, ParsedToolCall, ToolCallOutcome};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -62,21 +61,19 @@ pub struct DeepAgent<M: ChatModel + Clone + Send + Sync + 'static> {
 impl<M: ChatModel + Clone + Send + Sync + 'static> DeepAgent<M> {
     fn local_tool_definition_context(input: &LoopInput) -> ToolDefinitionContext {
         match input {
-            LoopInput::Start {
-                metadata,
-                user_state,
-                ..
-            } => ToolDefinitionContext {
+            LoopInput::Start { metadata, .. } => ToolDefinitionContext {
                 metadata: metadata.clone(),
-                user_state: user_state.clone().unwrap_or(serde_json::Value::Null),
+                user_state: serde_json::Value::Null,
                 ..ToolDefinitionContext::default()
             },
-            LoopInput::Resume { state, .. } | LoopInput::Cancel { state } => ToolDefinitionContext {
-                thread_id: Some(state.thread_id.clone()),
-                run_id: Some(state.run_id.clone()),
-                metadata: state.config.metadata.clone(),
-                user_state: state.user_state.clone(),
-            },
+            LoopInput::Resume { state, .. } => {
+                ToolDefinitionContext {
+                    thread_id: Some(state.thread_id.clone()),
+                    run_id: Some(state.run_id.clone()),
+                    metadata: state.config.metadata.clone(),
+                    user_state: state.user_state.clone(),
+                }
+            }
         }
     }
 
@@ -106,12 +103,12 @@ impl<M: ChatModel + Clone + Send + Sync + 'static> DeepAgent<M> {
         &self,
         input: LoopInput,
     ) -> Result<impl Stream<Item = DeepAgentEvent> + '_, AgentError> {
-        Ok(self.drive(input))
+        Ok(self.drive(ChatCtx::default(), input))
     }
 
     // ── Internal drive loop ───────────────────────────────────────────────────
 
-    fn drive<'a>(&'a self, input: LoopInput) -> impl Stream<Item = DeepAgentEvent> + 'a {
+    fn drive<'a>(&'a self, ctx: ChatCtx, input: LoopInput) -> impl Stream<Item = DeepAgentEvent> + 'a {
         // Cache local tool definitions for this input.
         let extra_defs = self
             .local_tools
@@ -123,7 +120,7 @@ impl<M: ChatModel + Clone + Send + Sync + 'static> DeepAgent<M> {
 
             loop {
                 // ── Call inner agent ──────────────────────────────────────────
-                let inner_stream = match self.inner.chat(current).await {
+                let inner_stream = match self.inner.chat(ctx.clone(), current).await {
                     Ok(s) => s,
                     Err(e) => {
                         yield DeepAgentEvent::Agent(AgentEvent::Error(e));
@@ -148,13 +145,17 @@ impl<M: ChatModel + Clone + Send + Sync + 'static> DeepAgent<M> {
                                 .cloned()
                                 .partition(|tc| self.local_tools.contains(&tc.name));
 
-                            let tool_ctx = build_tool_ctx(&state);
                             let resume_map = HashMap::new();
                             let mut all_outcomes: Vec<ToolCallOutcome> = completed_results;
 
                             if !local.is_empty() {
+                                ctx.update(|ctx_state| {
+                                    ctx_state.metadata = state.config.metadata.clone();
+                                    ctx_state.user_state = state.user_state.clone();
+                                });
+
                                 let results = self.local_tools
-                                    .execute_parallel(&local, &resume_map, &tool_ctx)
+                                    .execute_parallel(&local, &resume_map, &ctx)
                                     .await;
 
                                 for (call_id, result) in results {
@@ -168,8 +169,24 @@ impl<M: ChatModel + Clone + Send + Sync + 'static> DeepAgent<M> {
                                         Ok(remi_core::tool::ToolResult::Output(mut s)) => {
                                             let mut last = String::new();
                                             while let Some(out) = s.next().await {
-                                                if let ToolOutput::Result(c) = out {
-                                                    last = c.text_content();
+                                                match out {
+                                                    ToolOutput::Result(c) => {
+                                                        last = c.text_content();
+                                                    }
+                                                    ToolOutput::SubSession(event) => {
+                                                        yield DeepAgentEvent::Agent(AgentEvent::SubSession(event));
+                                                    }
+                                                    ToolOutput::Custom { event_type, extra } => {
+                                                        yield DeepAgentEvent::Agent(AgentEvent::Custom {
+                                                            event_type,
+                                                            extra: serde_json::json!({
+                                                                "tool_call_id": call_id,
+                                                                "tool_name": tc.name,
+                                                                "payload": extra,
+                                                            }),
+                                                        });
+                                                    }
+                                                    ToolOutput::Delta(_) => {}
                                                 }
                                             }
                                             last
@@ -177,7 +194,7 @@ impl<M: ChatModel + Clone + Send + Sync + 'static> DeepAgent<M> {
                                     };
 
                                     // Emit specialised layer events
-                                    for deep_ev in make_deep_events(tc, &result_str, &tool_ctx) {
+                                    for deep_ev in make_deep_events(tc, &result_str, &ctx) {
                                         yield deep_ev;
                                     }
 
@@ -189,8 +206,7 @@ impl<M: ChatModel + Clone + Send + Sync + 'static> DeepAgent<M> {
                                 }
 
                                 // Write back user_state mutations from todo tools
-                                state.user_state =
-                                    tool_ctx.user_state.read().unwrap().clone();
+                                state.user_state = ctx.user_state();
                             }
 
                             if !external.is_empty() {
@@ -206,6 +222,7 @@ impl<M: ChatModel + Clone + Send + Sync + 'static> DeepAgent<M> {
                             // All handled — schedule resume
                             next_input = Some(LoopInput::Resume {
                                 state,
+                                pending_interrupts: vec![],
                                 results: all_outcomes,
                             });
                             break; // break inner while, outer loop will re-call inner
@@ -581,56 +598,39 @@ When unsure, say so. Prefer working solutions over long explanations.\n";
 fn inject_extra_tools(input: LoopInput, extra: Vec<ToolDefinition>) -> LoopInput {
     match input {
         LoopInput::Start {
-            content,
+            message,
             history,
             mut extra_tools,
             model,
             temperature,
             max_tokens,
             metadata,
-            message_metadata,
-            user_name,
-            user_state,
         } => {
             extra_tools.extend(extra);
             LoopInput::Start {
-                content,
+                message,
                 history,
                 extra_tools,
                 model,
                 temperature,
                 max_tokens,
                 metadata,
-                message_metadata,
-                user_name,
-                user_state,
             }
         }
         other => other,
     }
 }
 
-fn build_tool_ctx(state: &AgentState) -> ToolContext {
-    let user_state = Arc::new(std::sync::RwLock::new(state.user_state.clone()));
-    ToolContext {
-        config: AgentConfig::default(),
-        thread_id: Some(state.thread_id.clone()),
-        run_id: state.run_id.clone(),
-        metadata: state.config.metadata.clone(),
-        user_state,
-    }
-}
-
 /// Derive `DeepAgentEvent` side-events for a completed tool call.
-fn make_deep_events(tc: &ParsedToolCall, result: &str, ctx: &ToolContext) -> Vec<DeepAgentEvent> {
+fn make_deep_events(tc: &ParsedToolCall, result: &str, ctx: &ChatCtx) -> Vec<DeepAgentEvent> {
     let mut evs = vec![];
     match tc.name.as_str() {
         "todo__add" => {
             let content = tc.arguments["content"].as_str().unwrap_or("").to_string();
             // Extract the ID from user_state (it was just written by the tool)
-            let us = ctx.user_state.read().unwrap();
-            let todos: Vec<crate::todo::tools::TodoItem> =
-                serde_json::from_value(us["__todos"].clone()).unwrap_or_default();
+            let todos: Vec<crate::todo::tools::TodoItem> = ctx.with_user_state(|us| {
+                serde_json::from_value(us["__todos"].clone()).unwrap_or_default()
+            });
             let id = todos.iter().map(|t| t.id).max().unwrap_or(0);
             evs.push(DeepAgentEvent::Todo(TodoEvent::Added { id, content }));
         }

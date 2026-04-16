@@ -23,24 +23,44 @@ pub enum Union2<A, B> {
 }
 
 impl<A, B> Union2<A, B> {
-    pub fn from_a(a: A) -> Self { Self::A(a) }
-    pub fn from_b(b: B) -> Self { Self::B(b) }
+    pub fn from_a(a: A) -> Self {
+        Self::A(a)
+    }
+    pub fn from_b(b: B) -> Self {
+        Self::B(b)
+    }
 
-    pub fn is_a(&self) -> bool { matches!(self, Self::A(_)) }
-    pub fn is_b(&self) -> bool { matches!(self, Self::B(_)) }
+    pub fn is_a(&self) -> bool {
+        matches!(self, Self::A(_))
+    }
+    pub fn is_b(&self) -> bool {
+        matches!(self, Self::B(_))
+    }
 
     pub fn as_a(&self) -> Option<&A> {
-        match self { Self::A(a) => Some(a), _ => None }
+        match self {
+            Self::A(a) => Some(a),
+            _ => None,
+        }
     }
     pub fn as_b(&self) -> Option<&B> {
-        match self { Self::B(b) => Some(b), _ => None }
+        match self {
+            Self::B(b) => Some(b),
+            _ => None,
+        }
     }
 
     pub fn into_a(self) -> Option<A> {
-        match self { Self::A(a) => Some(a), _ => None }
+        match self {
+            Self::A(a) => Some(a),
+            _ => None,
+        }
     }
     pub fn into_b(self) -> Option<B> {
-        match self { Self::B(b) => Some(b), _ => None }
+        match self {
+            Self::B(b) => Some(b),
+            _ => None,
+        }
     }
 
     pub fn map_a<T>(self, f: impl FnOnce(A) -> T) -> Union2<T, B> {
@@ -68,32 +88,62 @@ pub enum Union3<A, B, C> {
 }
 
 impl<A, B, C> Union3<A, B, C> {
-    pub fn from_a(a: A) -> Self { Self::A(a) }
-    pub fn from_b(b: B) -> Self { Self::B(b) }
-    pub fn from_c(c: C) -> Self { Self::C(c) }
+    pub fn from_a(a: A) -> Self {
+        Self::A(a)
+    }
+    pub fn from_b(b: B) -> Self {
+        Self::B(b)
+    }
+    pub fn from_c(c: C) -> Self {
+        Self::C(c)
+    }
 
-    pub fn is_a(&self) -> bool { matches!(self, Self::A(_)) }
-    pub fn is_b(&self) -> bool { matches!(self, Self::B(_)) }
-    pub fn is_c(&self) -> bool { matches!(self, Self::C(_)) }
+    pub fn is_a(&self) -> bool {
+        matches!(self, Self::A(_))
+    }
+    pub fn is_b(&self) -> bool {
+        matches!(self, Self::B(_))
+    }
+    pub fn is_c(&self) -> bool {
+        matches!(self, Self::C(_))
+    }
 
     pub fn as_a(&self) -> Option<&A> {
-        match self { Self::A(a) => Some(a), _ => None }
+        match self {
+            Self::A(a) => Some(a),
+            _ => None,
+        }
     }
     pub fn as_b(&self) -> Option<&B> {
-        match self { Self::B(b) => Some(b), _ => None }
+        match self {
+            Self::B(b) => Some(b),
+            _ => None,
+        }
     }
     pub fn as_c(&self) -> Option<&C> {
-        match self { Self::C(c) => Some(c), _ => None }
+        match self {
+            Self::C(c) => Some(c),
+            _ => None,
+        }
     }
 
     pub fn into_a(self) -> Option<A> {
-        match self { Self::A(a) => Some(a), _ => None }
+        match self {
+            Self::A(a) => Some(a),
+            _ => None,
+        }
     }
     pub fn into_b(self) -> Option<B> {
-        match self { Self::B(b) => Some(b), _ => None }
+        match self {
+            Self::B(b) => Some(b),
+            _ => None,
+        }
     }
     pub fn into_c(self) -> Option<C> {
-        match self { Self::C(c) => Some(c), _ => None }
+        match self {
+            Self::C(c) => Some(c),
+            _ => None,
+        }
     }
 }
 
@@ -109,40 +159,80 @@ pub enum Union4<A, B, C, D> {
 }
 
 impl<A, B, C, D> Union4<A, B, C, D> {
-    pub fn from_a(a: A) -> Self { Self::A(a) }
-    pub fn from_b(b: B) -> Self { Self::B(b) }
-    pub fn from_c(c: C) -> Self { Self::C(c) }
-    pub fn from_d(d: D) -> Self { Self::D(d) }
+    pub fn from_a(a: A) -> Self {
+        Self::A(a)
+    }
+    pub fn from_b(b: B) -> Self {
+        Self::B(b)
+    }
+    pub fn from_c(c: C) -> Self {
+        Self::C(c)
+    }
+    pub fn from_d(d: D) -> Self {
+        Self::D(d)
+    }
 
-    pub fn is_a(&self) -> bool { matches!(self, Self::A(_)) }
-    pub fn is_b(&self) -> bool { matches!(self, Self::B(_)) }
-    pub fn is_c(&self) -> bool { matches!(self, Self::C(_)) }
-    pub fn is_d(&self) -> bool { matches!(self, Self::D(_)) }
+    pub fn is_a(&self) -> bool {
+        matches!(self, Self::A(_))
+    }
+    pub fn is_b(&self) -> bool {
+        matches!(self, Self::B(_))
+    }
+    pub fn is_c(&self) -> bool {
+        matches!(self, Self::C(_))
+    }
+    pub fn is_d(&self) -> bool {
+        matches!(self, Self::D(_))
+    }
 
     pub fn as_a(&self) -> Option<&A> {
-        match self { Self::A(a) => Some(a), _ => None }
+        match self {
+            Self::A(a) => Some(a),
+            _ => None,
+        }
     }
     pub fn as_b(&self) -> Option<&B> {
-        match self { Self::B(b) => Some(b), _ => None }
+        match self {
+            Self::B(b) => Some(b),
+            _ => None,
+        }
     }
     pub fn as_c(&self) -> Option<&C> {
-        match self { Self::C(c) => Some(c), _ => None }
+        match self {
+            Self::C(c) => Some(c),
+            _ => None,
+        }
     }
     pub fn as_d(&self) -> Option<&D> {
-        match self { Self::D(d) => Some(d), _ => None }
+        match self {
+            Self::D(d) => Some(d),
+            _ => None,
+        }
     }
 
     pub fn into_a(self) -> Option<A> {
-        match self { Self::A(a) => Some(a), _ => None }
+        match self {
+            Self::A(a) => Some(a),
+            _ => None,
+        }
     }
     pub fn into_b(self) -> Option<B> {
-        match self { Self::B(b) => Some(b), _ => None }
+        match self {
+            Self::B(b) => Some(b),
+            _ => None,
+        }
     }
     pub fn into_c(self) -> Option<C> {
-        match self { Self::C(c) => Some(c), _ => None }
+        match self {
+            Self::C(c) => Some(c),
+            _ => None,
+        }
     }
     pub fn into_d(self) -> Option<D> {
-        match self { Self::D(d) => Some(d), _ => None }
+        match self {
+            Self::D(d) => Some(d),
+            _ => None,
+        }
     }
 }
 

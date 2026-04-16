@@ -42,6 +42,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     },
                     "required": ["a", "b"]
                 }),
+                extra_prompt: None,
             },
         },
         ToolDefinition {
@@ -57,13 +58,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     },
                     "required": ["a", "b"]
                 }),
+                extra_prompt: None,
             },
         },
     ];
 
     // ── Build initial state ──────────────────────────────────────────────
     let state = AgentState::new(StepConfig::new(model_name))
-        .with_system_prompt("You are a calculator. Use the tools to compute results. Always show your work.")
+        .with_system_prompt(
+            "You are a calculator. Use the tools to compute results. Always show your work.",
+        )
         .with_tool_definitions(tool_defs);
 
     eprintln!("═══ External Tool Calling Test ═══");
@@ -83,7 +87,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
 
         eprintln!("── step {turn} ──");
-        let step_stream = step(current_state, action.clone(), &oai);
+        let ctx = ChatCtx::default();
+        let step_stream = step(&ctx, current_state, action.clone(), &oai);
         let mut step_stream = std::pin::pin!(step_stream);
 
         let mut next_state = None;
@@ -100,7 +105,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     eprintln!("  [step yields] ReasoningStart");
                 }
                 StepEvent::ReasoningEnd { content } => {
-                    eprintln!("  [step yields] ReasoningEnd ({} chars)", content.chars().count());
+                    eprintln!(
+                        "  [step yields] ReasoningEnd ({} chars)",
+                        content.chars().count()
+                    );
                 }
                 StepEvent::ToolCallStart { id, name } => {
                     eprintln!("  [step yields] ToolCallStart: id={id} name={name}");
@@ -109,7 +117,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     eprint!("{delta}");
                     let _ = id;
                 }
-                StepEvent::Usage { prompt_tokens, completion_tokens } => {
+                StepEvent::Usage {
+                    prompt_tokens,
+                    completion_tokens,
+                } => {
                     eprintln!("  [tokens] prompt={prompt_tokens} completion={completion_tokens}");
                 }
                 StepEvent::Done { state } => {
@@ -118,12 +129,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 StepEvent::NeedToolExecution { state, tool_calls } => {
                     eprintln!();
-                    eprintln!("  [step yields] NeedToolExecution — {} tool call(s):", tool_calls.len());
+                    eprintln!(
+                        "  [step yields] NeedToolExecution — {} tool call(s):",
+                        tool_calls.len()
+                    );
                     for tc in &tool_calls {
                         eprintln!("    → {}({})", tc.name, tc.arguments);
                     }
                     next_state = Some(state);
                     pending_tool_calls = Some(tool_calls);
+                }
+                StepEvent::Cancelled { state } => {
+                    eprintln!("  [step yields] Cancelled");
+                    next_state = Some(state);
                 }
                 StepEvent::Error { error, .. } => {
                     eprintln!("  [step yields] Error: {error}");
@@ -199,7 +217,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     eprintln!("═══ State Serialization Test ═══");
     eprintln!("Serialized state size: {} bytes", json.len());
     let deserialized: AgentState = serde_json::from_str(&json)?;
-    eprintln!("Deserialized messages: {} (matches: {})",
+    eprintln!(
+        "Deserialized messages: {} (matches: {})",
         deserialized.messages.len(),
         deserialized.messages.len() == current_state.messages.len()
     );

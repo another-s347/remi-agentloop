@@ -31,14 +31,20 @@ type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + 'a>>;
 /// Object-safe version of [`InterruptHandler`] (internal).
 pub(crate) trait DynInterruptHandler: Send + Sync {
     fn can_handle(&self, kind: &str) -> bool;
-    fn handle<'a>(&'a self, info: &'a InterruptInfo) -> BoxFuture<'a, Result<serde_json::Value, AgentError>>;
+    fn handle<'a>(
+        &'a self,
+        info: &'a InterruptInfo,
+    ) -> BoxFuture<'a, Result<serde_json::Value, AgentError>>;
 }
 
 impl<T: InterruptHandler + Send + Sync> DynInterruptHandler for T {
     fn can_handle(&self, kind: &str) -> bool {
         InterruptHandler::can_handle(self, kind)
     }
-    fn handle<'a>(&'a self, info: &'a InterruptInfo) -> BoxFuture<'a, Result<serde_json::Value, AgentError>> {
+    fn handle<'a>(
+        &'a self,
+        info: &'a InterruptInfo,
+    ) -> BoxFuture<'a, Result<serde_json::Value, AgentError>> {
         Box::pin(InterruptHandler::handle(self, info))
     }
 }
@@ -61,7 +67,9 @@ pub struct InterruptRouter {
 
 impl InterruptRouter {
     pub fn new() -> Self {
-        Self { handlers: Vec::new() }
+        Self {
+            handlers: Vec::new(),
+        }
     }
 
     /// Register a handler. Handlers are tried in registration order.
@@ -108,5 +116,7 @@ impl InterruptRouter {
 }
 
 impl Default for InterruptRouter {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }

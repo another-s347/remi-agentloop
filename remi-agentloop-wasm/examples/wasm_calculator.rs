@@ -15,7 +15,7 @@ use futures::StreamExt;
 
 use remi_agentloop::agent::Agent;
 use remi_agentloop::protocol::ProtocolEvent;
-use remi_agentloop::types::{LoopInput, ParsedToolCall, ToolCallOutcome};
+use remi_agentloop::types::{ChatCtx, LoopInput, ParsedToolCall, ToolCallOutcome};
 use remi_agentloop_wasm::WasmAgent;
 
 #[tokio::main]
@@ -26,10 +26,7 @@ async fn main() {
         eprintln!("       expression defaults to \"2 + 3 * 4\"");
         std::process::exit(1);
     });
-    let expr = args
-        .get(2)
-        .cloned()
-        .unwrap_or_else(|| "2 + 3 * 4".into());
+    let expr = args.get(2).cloned().unwrap_or_else(|| "2 + 3 * 4".into());
 
     println!("Loading WASM component: {wasm_path}");
     let agent = WasmAgent::from_file(wasm_path).expect("Failed to load WASM component");
@@ -43,7 +40,7 @@ async fn main() {
     loop {
         step += 1;
         let stream = agent
-            .chat(input.clone())
+            .chat(ChatCtx::default(), input.clone())
             .await
             .expect("agent.chat() failed");
         let events: Vec<ProtocolEvent> = stream.collect().await;

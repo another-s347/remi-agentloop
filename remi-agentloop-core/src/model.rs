@@ -1,10 +1,10 @@
 use crate::agent::Agent;
 use crate::error::AgentError;
-use crate::types::{ChatRequest, ChatResponseChunk};
+use crate::types::{ChatResponseChunk, ModelRequest};
 
 /// Marker trait for language model clients.
 ///
-/// Any [`Agent`] whose associated types are `Request = ChatRequest`,
+/// Any [`Agent`] whose associated types are `Request = ModelRequest`,
 /// `Response = ChatResponseChunk`, and `Error = AgentError` automatically
 /// implements `ChatModel` via a blanket impl — you don't need to implement
 /// it manually.
@@ -18,11 +18,11 @@ use crate::types::{ChatRequest, ChatResponseChunk};
 /// struct MyModel { api_key: String }
 ///
 /// impl Agent for MyModel {
-///     type Request  = ChatRequest;
+///     type Request  = ModelRequest;
 ///     type Response = ChatResponseChunk;
 ///     type Error    = AgentError;
 ///
-///     async fn chat(&self, req: ChatRequest)
+///     async fn chat(&self, req: ModelRequest)
 ///         -> Result<impl Stream<Item = ChatResponseChunk>, AgentError>
 ///     {
 ///         // call your API, parse SSE, yield chunks…
@@ -32,11 +32,11 @@ use crate::types::{ChatRequest, ChatResponseChunk};
 /// // MyModel now automatically implements ChatModel
 /// ```
 pub trait ChatModel:
-    Agent<Request = ChatRequest, Response = ChatResponseChunk, Error = AgentError>
+    Agent<Request = ModelRequest, Response = ChatResponseChunk, Error = AgentError>
 {
 }
 
 impl<T> ChatModel for T where
-    T: Agent<Request = ChatRequest, Response = ChatResponseChunk, Error = AgentError>
+    T: Agent<Request = ModelRequest, Response = ChatResponseChunk, Error = AgentError>
 {
 }

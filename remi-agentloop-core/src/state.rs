@@ -3,7 +3,7 @@
 //! The agent loop is decomposed into a single primitive:
 //!
 //! ```ignore
-//! step(state, action, &model) -> Stream<StepEvent>
+//! step(ctx, state, action, &model) -> Stream<StepEvent>
 //! ```
 //!
 //! Each call to [`step`] makes exactly **one** model request. The stream
@@ -18,6 +18,12 @@
 //! Tools are **never** called inside `step()`. The caller (e.g. [`BuiltAgent`](crate::builder::BuiltAgent))
 //! is responsible for tool execution, interrupt handling, and turn counting.
 //!
+//! Conceptually, [`AgentState`] is an internal runtime snapshot for tools and
+//! layers to maintain execution progress across steps. The trajectory is still
+//! driven by the caller's request (`Action` here, and `LoopInput` at the
+//! `AgentLoop` boundary), while [`crate::types::ChatCtx`] carries the
+//! cross-cutting invocation context.
+//!
 //! # Using `step` for external tool execution
 //!
 //! ```ignore
@@ -30,7 +36,8 @@
 //!     .with_messages(vec![Message::user("What is 3+4?")])
 //!     .with_tool_definitions(tool_defs);
 //!
-//! let mut stream = step(state.clone(), Action::ToolResults(vec![]), &model);
+//! let ctx = ChatCtx::default();
+//! let mut stream = step(&ctx, state.clone(), Action::ToolResults(vec![]), &model);
 //! while let Some(event) = stream.next().await {
 //!     match event {
 //!         StepEvent::Done { state: new_state, .. } => { state = new_state; break; }
@@ -38,7 +45,7 @@
 //!             // execute tools externally…
 //!             state = new_state;
 //!             let outcomes = execute_externally(&tool_calls).await;
-//!             let mut stream2 = step(state.clone(), Action::ToolResults(outcomes), &model);
+//!             let mut stream2 = step(&ctx, state.clone(), Action::ToolResults(outcomes), &model);
 //!             // … drain stream2
 //!         }
 //!         _ => {}
@@ -54,7 +61,7 @@ use crate::error::AgentError;
 use crate::model::ChatModel;
 use crate::tool::ToolDefinition;
 use crate::types::{
-    ChatRequest, ChatResponseChunk, Content, FunctionCall, Message, ParsedToolCall, RunId,
+    ChatResponseChunk, FunctionCall, Message, ModelRequest, ParsedToolCall, RunId,
     StreamOptions, ThreadId, ToolCallMessage, ToolCallOutcome,
 };
 
@@ -224,7 +231,7 @@ fn supports_kimi_thinking_control(model: &str) -> bool {
     model.trim().eq_ignore_ascii_case("kimi-k2.5")
 }
 
-fn apply_provider_request_overrides(request: &mut ChatRequest) {
+fn apply_provider_request_overrides(request: &mut ModelRequest) {
     let Some(metadata) = request.metadata.as_ref() else {
         return;
     };
@@ -269,7 +276,7 @@ pub enum AgentPhase {
 
 /// Caller-supplied input to a single [`step()`] call.
 ///
-/// Use [`Action::UserMessage`] or [`Action::UserContent`] to start a new turn,
+/// Use [`Action::UserMessage`] to start a new turn,
 /// and [`Action::ToolResults`] to feed back the outcomes of tool calls requested
 /// by the previous step.
 ///
@@ -289,16 +296,8 @@ pub enum AgentPhase {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "type")]
 pub enum Action {
-    /// Start with a plain-text user message.
-    UserMessage(String),
-    /// Start with rich (multimodal) content.
-    UserContent {
-        content: Content,
-        /// Optional metadata to attach to the created user message.
-        message_metadata: Option<serde_json::Value>,
-        /// Optional user identifier (`name` field) on the created user message.
-        user_name: Option<String>,
-    },
+    /// Start with a user message.
+    UserMessage(Message),
     /// Feed back tool execution results (response to `NeedToolExecution`).
     ToolResults(Vec<ToolCallOutcome>),
 }
@@ -345,6 +344,10 @@ pub enum StepEvent {
         state: AgentState,
         tool_calls: Vec<ParsedToolCall>,
     },
+    /// The run was cancelled while the model stream was in progress.
+    Cancelled {
+        state: AgentState,
+    },
     /// An error occurred.
     Error {
         state: AgentState,
@@ -370,41 +373,25 @@ struct ToolCallAccumulator {
 /// # Panics
 /// Does **not** panic. Model or transport errors are reported via
 /// [`StepEvent::Error`].
-pub fn step<M: ChatModel>(
+pub fn step<'a, M: ChatModel>(
+    ctx: &'a crate::types::ChatCtx,
     state: AgentState,
     action: Action,
-    model: &M,
-) -> impl Stream<Item = StepEvent> + '_ {
+    model: &'a M,
+) -> impl Stream<Item = StepEvent> + 'a {
     let mut state = state;
 
     stream! {
         // ── 1. Apply the action to mutate state ──────────────────────
         match action {
-            Action::UserMessage(text) => {
+            Action::UserMessage(message) => {
                 // Ensure system prompt is present as the first message
                 if let Some(ref sys) = state.system_prompt {
                     if !state.messages.first().is_some_and(|m| matches!(m.role, crate::types::Role::System)) {
                         state.messages.insert(0, Message::system(sys));
                     }
                 }
-                state.messages.push(Message::user(&text));
-            }
-            Action::UserContent { content, message_metadata, user_name } => {
-                if let Some(ref sys) = state.system_prompt {
-                    if !state.messages.first().is_some_and(|m| matches!(m.role, crate::types::Role::System)) {
-                        state.messages.insert(0, Message::system(sys));
-                    }
-                }
-                state.messages.push(Message {
-                    id: crate::types::MessageId::new(),
-                    role: crate::types::Role::User,
-                    content,
-                    tool_calls: None,
-                    tool_call_id: None,
-                    name: user_name,
-                    reasoning_content: None,
-                    metadata: message_metadata,
-                });
+                state.messages.push(message);
             }
             Action::ToolResults(outcomes) => {
                 for outcome in outcomes {
@@ -427,7 +414,7 @@ pub fn step<M: ChatModel>(
             Some(state.tool_definitions.clone())
         };
 
-        let mut request = ChatRequest {
+        let mut request = ModelRequest {
             model: state.config.model.clone(),
             messages: state.messages.clone(),
             tools: tool_defs,
@@ -442,7 +429,7 @@ pub fn step<M: ChatModel>(
         apply_provider_request_overrides(&mut request);
 
         // ── 3. Call model ────────────────────────────────────────────
-        let chat_stream = match model.chat(request).await {
+        let chat_stream = match model.chat(ctx.clone(), request).await {
             Ok(s) => s,
             Err(e) => {
                 state.phase = AgentPhase::Error;
@@ -460,7 +447,23 @@ pub fn step<M: ChatModel>(
         // Bracket tracking: emit ReasoningStart on first chunk, ReasoningEnd on transition.
         let mut reasoning_open = false; // ReasoningStart emitted, ReasoningEnd not yet
 
-        while let Some(chunk) = chat_stream.next().await {
+        loop {
+            if ctx.is_cancelled() {
+                state.phase = AgentPhase::Done;
+                yield StepEvent::Cancelled { state };
+                return;
+            }
+
+            let Some(chunk) = chat_stream.next().await else {
+                break;
+            };
+
+            if ctx.is_cancelled() {
+                state.phase = AgentPhase::Done;
+                yield StepEvent::Cancelled { state };
+                return;
+            }
+
             match chunk {
                 ChatResponseChunk::ReasoningDelta { content } => {
                     if !reasoning_open {
@@ -502,6 +505,12 @@ pub fn step<M: ChatModel>(
                 }
                 ChatResponseChunk::Done => break,
             }
+        }
+
+        if ctx.is_cancelled() {
+            state.phase = AgentPhase::Done;
+            yield StepEvent::Cancelled { state };
+            return;
         }
 
         // ── 5. Terminal event ────────────────────────────────────────

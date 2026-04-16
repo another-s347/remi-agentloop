@@ -25,7 +25,7 @@ use futures::StreamExt;
 
 use remi_agentloop::agent::Agent;
 use remi_agentloop::protocol::ProtocolEvent;
-use remi_agentloop::types::{Content, LoopInput};
+use remi_agentloop::types::{ChatCtx, Content, LoopInput};
 use remi_agentloop_wasm::WasmAgentWithHttp;
 
 #[tokio::main]
@@ -69,8 +69,7 @@ async fn main() {
     });
 
     println!("Loading WASM component: {wasm_path}");
-    let agent =
-        WasmAgentWithHttp::from_file(wasm_path).expect("Failed to load WASM component");
+    let agent = WasmAgentWithHttp::from_file(wasm_path).expect("Failed to load WASM component");
 
     println!("Expression: {expr}");
     println!("---");
@@ -85,9 +84,14 @@ async fn main() {
         temperature: None,
         max_tokens: None,
         metadata: Some(metadata),
+        message_metadata: None,
+        user_name: None,
     };
 
-    let stream = agent.chat(input).await.expect("agent.chat() failed");
+    let stream = agent
+        .chat(ChatCtx::default(), input)
+        .await
+        .expect("agent.chat() failed");
     let events: Vec<ProtocolEvent> = stream.collect().await;
 
     for event in &events {
@@ -95,12 +99,13 @@ async fn main() {
             ProtocolEvent::Delta { content, .. } => {
                 print!("{content}");
             }
-            ProtocolEvent::ToolCallDelta { id, arguments_delta } => {
+            ProtocolEvent::ToolCallDelta {
+                id,
+                arguments_delta,
+            } => {
                 println!("[tool:{id}] {arguments_delta}");
             }
-            ProtocolEvent::ToolResult {
-                name, result, ..
-            } => {
+            ProtocolEvent::ToolResult { name, result, .. } => {
                 println!("[tool:{name}] → {result}");
             }
             ProtocolEvent::Done => {

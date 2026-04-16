@@ -1,4 +1,4 @@
-use crate::types::{InterruptInfo, Message, RunId, ThreadId};
+use crate::types::{InterruptInfo, Message, RunId, SpanNode, ThreadId};
 use serde::Serialize;
 use std::time::Duration;
 
@@ -12,6 +12,7 @@ pub use langsmith::LangSmithTracer;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct RunStartTrace {
+    pub span: SpanNode,
     pub thread_id: Option<ThreadId>,
     pub run_id: RunId,
     pub model: String,
@@ -23,6 +24,7 @@ pub struct RunStartTrace {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct RunEndTrace {
+    pub span: SpanNode,
     pub run_id: RunId,
     pub status: RunStatus,
     pub output_messages: Vec<Message>,
@@ -37,6 +39,7 @@ pub struct RunEndTrace {
 #[derive(Debug, Clone, Serialize)]
 pub enum RunStatus {
     Completed,
+    Cancelled,
     Interrupted,
     Error,
     MaxTurnsExceeded,
@@ -44,6 +47,7 @@ pub enum RunStatus {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ModelStartTrace {
+    pub span: SpanNode,
     pub run_id: RunId,
     pub turn: usize,
     pub call_index: usize,
@@ -55,6 +59,7 @@ pub struct ModelStartTrace {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ModelEndTrace {
+    pub span: SpanNode,
     pub run_id: RunId,
     pub turn: usize,
     pub call_index: usize,
@@ -78,6 +83,7 @@ pub struct ToolCallTrace {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ToolStartTrace {
+    pub span: SpanNode,
     pub run_id: RunId,
     pub turn: usize,
     pub tool_call_id: String,
@@ -88,6 +94,7 @@ pub struct ToolStartTrace {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ToolEndTrace {
+    pub span: SpanNode,
     pub run_id: RunId,
     pub turn: usize,
     pub tool_call_id: String,
@@ -118,6 +125,7 @@ pub struct ToolExecutionHandoffTrace {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct InterruptTrace {
+    pub span: SpanNode,
     pub run_id: RunId,
     pub interrupts: Vec<InterruptInfo>,
     pub timestamp: chrono::DateTime<chrono::Utc>,
@@ -125,6 +133,7 @@ pub struct InterruptTrace {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ResumeTrace {
+    pub span: SpanNode,
     pub run_id: RunId,
     pub payloads_count: usize,
     pub outcomes: Vec<ToolOutcomeTrace>,
@@ -143,6 +152,7 @@ pub struct ExternalToolResultTrace {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct TurnStartTrace {
+    pub span: SpanNode,
     pub run_id: RunId,
     pub turn: usize,
     pub timestamp: chrono::DateTime<chrono::Utc>,
@@ -226,7 +236,7 @@ impl<T: Tracer + Send + Sync> DynTracer for T {
         Box::pin(Tracer::on_turn_start(self, event))
     }
     fn on_custom<'a>(&'a self, name: &'a str, data: &'a serde_json::Value) -> BoxFuture<'a> {
-        Box::pin(Tracer::on_custom(self, name, data))
+        Box::pin(<T as Tracer>::on_custom(self, name, data))
     }
     fn on_flush<'a>(&'a self) -> BoxFuture<'a> {
         Box::pin(Tracer::on_flush(self))

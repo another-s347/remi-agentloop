@@ -32,8 +32,8 @@ use async_stream::stream;
 use futures::Stream;
 
 use remi_core::error::AgentError;
-use remi_core::tool::{Tool, ToolContext, ToolOutput, ToolResult};
-use remi_core::types::ResumePayload;
+use remi_core::tool::{Tool, ToolOutput, ToolResult};
+use remi_core::types::{ChatCtx, ResumePayload};
 
 // ── internal helpers ──────────────────────────────────────────────────────────
 
@@ -93,10 +93,9 @@ impl Tool for FsReadTool {
         &self,
         arguments: serde_json::Value,
         _resume: Option<ResumePayload>,
-        _ctx: &ToolContext,
-    ) -> impl std::future::Future<
-        Output = Result<ToolResult<impl Stream<Item = ToolOutput>>, AgentError>,
-    > {
+        _ctx: ChatCtx,
+    ) -> impl std::future::Future<Output = Result<ToolResult<impl Stream<Item = ToolOutput>>, AgentError>>
+    {
         let fs = self.fs.clone();
         async move {
             let path_str = need_path(&arguments, "fs_read")?;
@@ -161,10 +160,9 @@ impl Tool for FsWriteTool {
         &self,
         arguments: serde_json::Value,
         _resume: Option<ResumePayload>,
-        _ctx: &ToolContext,
-    ) -> impl std::future::Future<
-        Output = Result<ToolResult<impl Stream<Item = ToolOutput>>, AgentError>,
-    > {
+        _ctx: ChatCtx,
+    ) -> impl std::future::Future<Output = Result<ToolResult<impl Stream<Item = ToolOutput>>, AgentError>>
+    {
         let fs = self.fs.clone();
         async move {
             let path_str = need_path(&arguments, "fs_write")?;
@@ -232,10 +230,9 @@ impl Tool for FsCreateTool {
         &self,
         arguments: serde_json::Value,
         _resume: Option<ResumePayload>,
-        _ctx: &ToolContext,
-    ) -> impl std::future::Future<
-        Output = Result<ToolResult<impl Stream<Item = ToolOutput>>, AgentError>,
-    > {
+        _ctx: ChatCtx,
+    ) -> impl std::future::Future<Output = Result<ToolResult<impl Stream<Item = ToolOutput>>, AgentError>>
+    {
         let fs = self.fs.clone();
         async move {
             let path_str = need_path(&arguments, "fs_mkdir")?;
@@ -298,10 +295,9 @@ impl Tool for FsRemoveTool {
         &self,
         arguments: serde_json::Value,
         _resume: Option<ResumePayload>,
-        _ctx: &ToolContext,
-    ) -> impl std::future::Future<
-        Output = Result<ToolResult<impl Stream<Item = ToolOutput>>, AgentError>,
-    > {
+        _ctx: ChatCtx,
+    ) -> impl std::future::Future<Output = Result<ToolResult<impl Stream<Item = ToolOutput>>, AgentError>>
+    {
         let fs = self.fs.clone();
         async move {
             let path_str = need_path(&arguments, "fs_remove")?;
@@ -363,10 +359,9 @@ impl Tool for FsLsTool {
         &self,
         arguments: serde_json::Value,
         _resume: Option<ResumePayload>,
-        _ctx: &ToolContext,
-    ) -> impl std::future::Future<
-        Output = Result<ToolResult<impl Stream<Item = ToolOutput>>, AgentError>,
-    > {
+        _ctx: ChatCtx,
+    ) -> impl std::future::Future<Output = Result<ToolResult<impl Stream<Item = ToolOutput>>, AgentError>>
+    {
         let fs = self.fs.clone();
         async move {
             let path_str = need_path(&arguments, "fs_ls")?;

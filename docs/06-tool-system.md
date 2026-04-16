@@ -109,12 +109,54 @@ pub trait Tool {
     /// 执行工具——返回 ToolResult：
     /// - `ToolResult::Output(stream)` → 正常执行，stream yield Delta / Result
     /// - `ToolResult::Interrupt(req)` → 请求中断，无 stream
-    fn execute(
+    async fn execute(
         &self,
         arguments: serde_json::Value,
-    ) -> impl Future<Output = Result<ToolResult<impl Stream<Item = ToolOutput>>, AgentError>>;
+        resume: Option<ResumePayload>,
+        ctx: &ChatCtx,
+    ) -> Result<ToolResult<impl Stream<Item = ToolOutput>>, AgentError>;
 }
 ```
+
+### Typed 参数定义
+
+推荐做法是不再手写 `parameters_schema()` 里的 JSON，而是把 schema 和参数解析都绑定到同一个 Rust 类型：
+
+```rust
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+struct SearchArgs {
+    query: String,
+    limit: Option<u32>,
+}
+
+impl Tool for SearchTool {
+    fn name(&self) -> &str { "web_search" }
+    fn description(&self) -> &str { "Search the web" }
+
+    fn parameters_schema(&self) -> serde_json::Value {
+        remi_agentloop::tool::schema_for_type::<SearchArgs>()
+    }
+
+    async fn execute(
+        &self,
+        arguments: serde_json::Value,
+        _resume: Option<ResumePayload>,
+        _ctx: &ChatCtx,
+    ) -> Result<ToolResult<impl Stream<Item = ToolOutput>>, AgentError> {
+        let SearchArgs { query, limit } =
+            remi_agentloop::tool::parse_arguments("web_search", arguments)?;
+
+        Ok(ToolResult::Output(stream! {
+            yield ToolOutput::text(format!("searching {query} with {limit:?}"));
+        }))
+    }
+}
+```
+
+这条路径解决两个老问题：
+
+- schema 与运行时参数解析不再各写一份
+- `Option<T>`、嵌套 struct、enum、`serde(rename)` 等规则由 schemars 统一处理
 
 ### 简单 Tool 实现示例
 
@@ -126,9 +168,12 @@ impl Tool for SearchTool {
     fn description(&self) -> &str { "Search the web" }
     fn parameters_schema(&self) -> serde_json::Value { /* ... */ }
 
-    fn execute(&self, args: serde_json::Value)
-        -> impl Future<Output = Result<ToolResult<impl Stream<Item = ToolOutput>>, AgentError>>
-    {
+    async fn execute(
+        &self,
+        args: serde_json::Value,
+        _resume: Option<ResumePayload>,
+        _ctx: &ChatCtx,
+    ) -> Result<ToolResult<impl Stream<Item = ToolOutput>>, AgentError> {
         async move {
             // 正常执行——返回 ToolResult::Output 包装的 stream
             Ok(ToolResult::Output(stream! {
@@ -151,9 +196,12 @@ impl Tool for PaymentTool {
     fn description(&self) -> &str { "Process a payment, requires approval" }
     fn parameters_schema(&self) -> serde_json::Value { /* ... */ }
 
-    fn execute(&self, args: serde_json::Value)
-        -> impl Future<Output = Result<ToolResult<impl Stream<Item = ToolOutput>>, AgentError>>
-    {
+    async fn execute(
+        &self,
+        args: serde_json::Value,
+        _resume: Option<ResumePayload>,
+        _ctx: &ChatCtx,
+    ) -> Result<ToolResult<impl Stream<Item = ToolOutput>>, AgentError> {
         async move {
             let amount = args["amount"].as_f64().unwrap();
 
@@ -264,6 +312,8 @@ pub(crate) trait DynTool {
     fn execute_boxed(
         &self,
         arguments: serde_json::Value,
+        resume: Option<ResumePayload>,
+        ctx: &ChatCtx,
     ) -> Pin<Box<dyn Future<Output = Result<BoxedToolResult<'_>, AgentError>> + '_>>;
 }
 
@@ -288,12 +338,15 @@ impl ToolRegistry {
     pub async fn execute_parallel(
         &self,
         calls: &[ParsedToolCall],
+        resume_map: &HashMap<String, ResumePayload>,
+        ctx: &ChatCtx,
     ) -> Vec<(String, Result<BoxedToolResult<'_>, AgentError>)> {
         let futs: Vec<_> = calls.iter().map(|tc| {
             let tool = self.get(&tc.name);
+            let resume = resume_map.get(&tc.id).cloned();
             async move {
                 match tool {
-                    Some(t) => (tc.id.clone(), t.execute_boxed(tc.arguments.clone()).await),
+                    Some(t) => (tc.id.clone(), t.execute_boxed(tc.arguments.clone(), resume, ctx).await),
                     None => (tc.id.clone(), Err(AgentError::ToolNotFound(tc.name.clone()))),
                 }
             }

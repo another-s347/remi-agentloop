@@ -1,11 +1,11 @@
-use crate::config::AgentConfig;
 use crate::error::AgentError;
-use crate::types::{Content, InterruptId, ResumePayload, RunId, ThreadId};
+use crate::types::{ChatCtx, Content, InterruptId, ResumePayload, RunId, ThreadId};
 use futures::Stream;
+use schemars::JsonSchema;
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::{Arc, RwLock};
 
 // ── ToolOutput ────────────────────────────────────────────────────────────────
 
@@ -35,6 +35,11 @@ pub enum ToolOutput {
     Delta(String),
     /// Structured sub-session event emitted by a sub-agent tool.
     SubSession(crate::types::SubSessionEvent),
+    /// Structured custom event that should be forwarded upstream without loss.
+    Custom {
+        event_type: String,
+        extra: serde_json::Value,
+    },
     /// Final result content (text and/or images) — appended to the conversation
     /// as a tool-result message.
     Result(Content),
@@ -51,58 +56,18 @@ impl ToolOutput {
     pub fn text(s: impl Into<String>) -> Self {
         ToolOutput::Result(Content::text(s))
     }
-}
 
-// ── ToolContext ────────────────────────────────────────────────────────────────
-
-/// Runtime context injected by the agent loop into every tool execution.
-///
-/// Tools that don't need any context can simply ignore the `ctx` parameter.
-/// Tools that need to read or write cross-tool shared state can access
-/// [`user_state`](ToolContext::user_state).
-///
-/// # Example — reading config inside a tool
-///
-/// ```ignore
-/// async fn execute(&self, args: serde_json::Value, _resume: Option<ResumePayload>, ctx: &ToolContext)
-///     -> Result<ToolResult<impl Stream<Item = ToolOutput>>, AgentError>
-/// {
-///     let base_url = ctx.config.base_url.as_deref().unwrap_or("https://api.example.com");
-///     // … use base_url …
-///     Ok(ToolResult::Output(stream::once(async { ToolOutput::text("ok") })))
-/// }
-/// ```
-#[derive(Debug, Clone)]
-pub struct ToolContext {
-    /// Runtime configuration for the current agent invocation (API key, model,
-    /// base URL, timeout, …).
-    pub config: AgentConfig,
-    /// Thread identifier — `None` when the agent runs without a context store.
-    pub thread_id: Option<ThreadId>,
-    /// Current run identifier.
-    pub run_id: RunId,
-    /// Request-level metadata forwarded from [`LoopInput`](crate::types::LoopInput).
-    pub metadata: Option<serde_json::Value>,
-    /// Opaque user-defined state shared across all tool calls in a single run.
-    ///
-    /// `AgentLoop` snapshots `AgentState.user_state` into this field before
-    /// each batch of tool calls, then writes it back after the batch completes.
-    /// This enables patterns like progressive disclosure, where Tool A unlocks
-    /// Tool B by setting a flag in `user_state`.
-    ///
-    /// # Example
-    ///
-    /// ```ignore
-    /// // Inside a tool that unlocks the next tool:
-    /// let mut state = ctx.user_state.write().unwrap();
-    /// state["step_done"] = serde_json::json!(true);
-    /// ```
-    pub user_state: Arc<RwLock<serde_json::Value>>,
+    pub fn custom(event_type: impl Into<String>, extra: serde_json::Value) -> Self {
+        ToolOutput::Custom {
+            event_type: event_type.into(),
+            extra,
+        }
+    }
 }
 
 /// Runtime context used when generating tool definitions for the model.
 ///
-/// Unlike [`ToolContext`], this snapshot is read-only and may be built before
+/// Unlike [`ChatCtx`], this snapshot is read-only and may be built before
 /// a tool ever executes. Tools can inspect it to append optional, per-request
 /// guidance to their advertised definition.
 #[derive(Debug, Clone, Default)]
@@ -265,7 +230,7 @@ impl<S> ToolResult<S> {
 ///         &self,
 ///         args: serde_json::Value,
 ///         _resume: Option<ResumePayload>,
-///         _ctx: &ToolContext,
+///         _ctx: ChatCtx,
 ///     ) -> Result<ToolResult<impl Stream<Item = ToolOutput>>, AgentError> {
 ///         let a = args["a"].as_i64().unwrap_or(0);
 ///         let b = args["b"].as_i64().unwrap_or(0);
@@ -354,13 +319,13 @@ pub trait Tool {
     /// [`InterruptRequest`]. The tool should use the payload to complete
     /// the operation that was interrupted.
     ///
-    /// `ctx` provides runtime context (config, thread_id, run_id, metadata).
+    /// `ctx` provides the shared framework chat context for the current run.
     /// Tools that don't need context can simply ignore the parameter.
     async fn execute(
         &self,
         arguments: serde_json::Value,
         resume: Option<ResumePayload>,
-        ctx: &ToolContext,
+        ctx: ChatCtx,
     ) -> Result<ToolResult<impl Stream<Item = ToolOutput>>, AgentError>;
 }
 
@@ -398,7 +363,7 @@ pub(crate) trait DynTool: Send + Sync {
         &'a self,
         arguments: serde_json::Value,
         resume: Option<ResumePayload>,
-        ctx: &'a ToolContext,
+        ctx: ChatCtx,
     ) -> Pin<Box<dyn Future<Output = Result<BoxedToolResult<'a>, AgentError>> + 'a>>;
 }
 
@@ -423,7 +388,7 @@ impl<T: Tool + Send + Sync> DynTool for T {
         &'a self,
         arguments: serde_json::Value,
         resume: Option<ResumePayload>,
-        ctx: &'a ToolContext,
+        ctx: ChatCtx,
     ) -> Pin<Box<dyn Future<Output = Result<BoxedToolResult<'a>, AgentError>> + 'a>> {
         Box::pin(async move {
             let result = Tool::execute(self, arguments, resume, ctx).await?;
@@ -432,8 +397,30 @@ impl<T: Tool + Send + Sync> DynTool for T {
     }
 }
 
+/// Generate a JSON Schema value for a typed tool argument struct.
+pub fn schema_for_type<T: JsonSchema>() -> serde_json::Value {
+    serde_json::to_value(schemars::schema_for!(T)).unwrap_or_else(|_| {
+        serde_json::json!({
+            "type": "object",
+            "properties": {}
+        })
+    })
+}
+
+/// Decode a tool's raw JSON arguments into a typed Rust struct.
+pub fn parse_arguments<T: DeserializeOwned>(
+    tool_name: &str,
+    arguments: serde_json::Value,
+) -> Result<T, AgentError> {
+    serde_json::from_value(arguments)
+        .map_err(|error| AgentError::tool(tool_name, format!("invalid arguments: {error}")))
+}
+
 /// Helper: convert Tool → ToolDefinition
-pub(crate) fn tool_to_definition(tool: &dyn DynTool, ctx: &ToolDefinitionContext) -> ToolDefinition {
+pub(crate) fn tool_to_definition(
+    tool: &dyn DynTool,
+    ctx: &ToolDefinitionContext,
+) -> ToolDefinition {
     ToolDefinition {
         tool_type: "function".into(),
         function: FunctionDefinition {
@@ -446,3 +433,4 @@ pub(crate) fn tool_to_definition(tool: &dyn DynTool, ctx: &ToolDefinitionContext
 }
 
 pub mod registry;
+pub mod external;

@@ -5,6 +5,13 @@
 //! async / platform-specific dependencies so they compile to `wasm32`.
 
 use serde::{Deserialize, Serialize};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static NEXT_ID: AtomicU64 = AtomicU64::new(1);
+
+fn synthetic_id(prefix: &str) -> String {
+    format!("{prefix}-{}", NEXT_ID.fetch_add(1, Ordering::Relaxed))
+}
 
 // ── Identifiers ──────────────────────────────────────────────────────────────
 
@@ -19,6 +26,12 @@ pub struct MessageId(pub String);
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct InterruptId(pub String);
+
+impl MessageId {
+    pub fn new() -> Self {
+        Self(synthetic_id("msg"))
+    }
+}
 
 impl std::fmt::Display for ThreadId {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
@@ -169,6 +182,133 @@ pub struct Message {
     pub metadata: Option<serde_json::Value>,
 }
 
+impl Message {
+    pub fn user(text: impl Into<String>) -> Self {
+        Self {
+            id: MessageId::new(),
+            role: Role::User,
+            content: Content::text(text),
+            tool_calls: None,
+            tool_call_id: None,
+            name: None,
+            reasoning_content: None,
+            metadata: None,
+        }
+    }
+
+    pub fn user_content(content: Content) -> Self {
+        Self {
+            id: MessageId::new(),
+            role: Role::User,
+            content,
+            tool_calls: None,
+            tool_call_id: None,
+            name: None,
+            reasoning_content: None,
+            metadata: None,
+        }
+    }
+
+    pub fn system(text: impl Into<String>) -> Self {
+        Self {
+            id: MessageId::new(),
+            role: Role::System,
+            content: Content::text(text),
+            tool_calls: None,
+            tool_call_id: None,
+            name: None,
+            reasoning_content: None,
+            metadata: None,
+        }
+    }
+
+    pub fn assistant(text: impl Into<String>) -> Self {
+        Self {
+            id: MessageId::new(),
+            role: Role::Assistant,
+            content: Content::text(text),
+            tool_calls: None,
+            tool_call_id: None,
+            name: None,
+            reasoning_content: None,
+            metadata: None,
+        }
+    }
+
+    pub fn assistant_with_tool_calls(
+        text: impl Into<String>,
+        tool_calls: Vec<ToolCallMessage>,
+        reasoning_content: Option<String>,
+    ) -> Self {
+        Self {
+            id: MessageId::new(),
+            role: Role::Assistant,
+            content: Content::text(text),
+            tool_calls: Some(tool_calls),
+            tool_call_id: None,
+            name: None,
+            reasoning_content,
+            metadata: None,
+        }
+    }
+
+    pub fn with_name(mut self, name: impl Into<String>) -> Self {
+        self.name = Some(name.into());
+        self
+    }
+
+    pub fn with_name_opt(mut self, name: Option<String>) -> Self {
+        if let Some(name) = name {
+            self.name = Some(name);
+        }
+        self
+    }
+
+    pub fn with_metadata(mut self, metadata: impl Into<serde_json::Value>) -> Self {
+        self.metadata = Some(metadata.into());
+        self
+    }
+
+    pub fn tool_result(tool_call_id: impl Into<String>, result: impl Into<String>) -> Self {
+        Self {
+            id: MessageId::new(),
+            role: Role::Tool,
+            content: Content::text(result),
+            tool_calls: None,
+            tool_call_id: Some(tool_call_id.into()),
+            name: None,
+            reasoning_content: None,
+            metadata: None,
+        }
+    }
+
+    pub fn tool_result_content(tool_call_id: impl Into<String>, content: Content) -> Self {
+        Self {
+            id: MessageId::new(),
+            role: Role::Tool,
+            content,
+            tool_calls: None,
+            tool_call_id: Some(tool_call_id.into()),
+            name: None,
+            reasoning_content: None,
+            metadata: None,
+        }
+    }
+
+    pub fn user_multimodal(parts: Vec<ContentPart>) -> Self {
+        Self {
+            id: MessageId::new(),
+            role: Role::User,
+            content: Content::parts(parts),
+            tool_calls: None,
+            tool_call_id: None,
+            name: None,
+            reasoning_content: None,
+            metadata: None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolCallMessage {
     pub id: String,
@@ -294,7 +434,7 @@ pub enum LoopInput {
     /// Start a new conversation turn.
     #[serde(rename = "start")]
     Start {
-        content: Content,
+        message: Message,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         history: Vec<Message>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -307,20 +447,13 @@ pub enum LoopInput {
         max_tokens: Option<u32>,
         #[serde(skip_serializing_if = "Option::is_none")]
         metadata: Option<serde_json::Value>,
-        /// Metadata to attach to the user message created from `content`.
-        #[serde(skip_serializing_if = "Option::is_none")]
-        message_metadata: Option<serde_json::Value>,
-        /// Optional user identifier attached to the user message as the `name` field.
-        #[serde(skip_serializing_if = "Option::is_none")]
-        user_name: Option<String>,
-        /// Initial user_state to inject into the run.
-        #[serde(skip_serializing_if = "Option::is_none")]
-        user_state: Option<serde_json::Value>,
     },
     /// Resume from a `NeedToolExecution` with completed tool results.
     #[serde(rename = "resume")]
     Resume {
         state: AgentState,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        pending_interrupts: Vec<InterruptInfo>,
         results: Vec<ToolCallOutcome>,
     },
 }
@@ -328,32 +461,106 @@ pub enum LoopInput {
 impl LoopInput {
     pub fn start(msg: impl Into<String>) -> Self {
         Self::Start {
-            content: Content::text(msg),
+            message: Message::user(msg),
             history: vec![],
             extra_tools: vec![],
             model: None,
             temperature: None,
             max_tokens: None,
             metadata: None,
-            message_metadata: None,
-            user_name: None,
-            user_state: None,
         }
     }
 
     pub fn start_content(content: Content) -> Self {
         Self::Start {
-            content,
+            message: Message::user_content(content),
             history: vec![],
             extra_tools: vec![],
             model: None,
             temperature: None,
             max_tokens: None,
             metadata: None,
-            message_metadata: None,
-            user_name: None,
-            user_state: None,
         }
+    }
+
+    pub fn start_message(message: Message) -> Self {
+        Self::Start {
+            message,
+            history: vec![],
+            extra_tools: vec![],
+            model: None,
+            temperature: None,
+            max_tokens: None,
+            metadata: None,
+        }
+    }
+
+    pub fn resume(
+        state: AgentState,
+        pending_interrupts: Vec<InterruptInfo>,
+        results: Vec<ToolCallOutcome>,
+    ) -> Self {
+        Self::Resume {
+            state,
+            pending_interrupts,
+            results,
+        }
+    }
+
+    pub fn history(mut self, msgs: Vec<Message>) -> Self {
+        if let Self::Start { history, .. } = &mut self {
+            *history = msgs;
+        }
+        self
+    }
+
+    pub fn extra_tools(mut self, defs: Vec<ToolDefinition>) -> Self {
+        if let Self::Start { extra_tools, .. } = &mut self {
+            *extra_tools = defs;
+        }
+        self
+    }
+
+    pub fn model(mut self, model_name: impl Into<String>) -> Self {
+        if let Self::Start { model, .. } = &mut self {
+            *model = Some(model_name.into());
+        }
+        self
+    }
+
+    pub fn temperature(mut self, value: f64) -> Self {
+        if let Self::Start { temperature, .. } = &mut self {
+            *temperature = Some(value);
+        }
+        self
+    }
+
+    pub fn max_tokens(mut self, value: u32) -> Self {
+        if let Self::Start { max_tokens, .. } = &mut self {
+            *max_tokens = Some(value);
+        }
+        self
+    }
+
+    pub fn metadata(mut self, value: serde_json::Value) -> Self {
+        if let Self::Start { metadata, .. } = &mut self {
+            *metadata = Some(value);
+        }
+        self
+    }
+
+    pub fn message_metadata(mut self, value: serde_json::Value) -> Self {
+        if let Self::Start { message, .. } = &mut self {
+            message.metadata = Some(value);
+        }
+        self
+    }
+
+    pub fn user_name(mut self, name: impl Into<String>) -> Self {
+        if let Self::Start { message, .. } = &mut self {
+            message.name = Some(name.into());
+        }
+        self
     }
 }
 

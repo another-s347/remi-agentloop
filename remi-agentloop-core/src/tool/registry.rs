@@ -1,12 +1,19 @@
 use super::{
-    tool_to_definition, BoxedToolResult, DynTool, Tool, ToolContext, ToolDefinition,
+    tool_to_definition, BoxedToolResult, DynTool, Tool, ToolDefinition,
     ToolDefinitionContext,
 };
 use crate::error::AgentError;
-use crate::types::{ParsedToolCall, ResumePayload};
+use crate::types::{ChatCtx, ParsedToolCall, ResumePayload};
+use futures::future::join_all;
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
+
+pub use super::external::{
+    AgentEventEnvelope, ExternalToolAgent as ToolLayerAgent,
+    ExternalToolHook as ToolLayerHook, ExternalToolLayer as ToolLayer,
+    NoopExternalToolHook as NoopToolLayerHook,
+};
 
 // ── ToolRegistry trait ────────────────────────────────────────────────────────
 
@@ -39,12 +46,28 @@ pub trait ToolRegistry: Send + Sync {
     /// Returns `true` if this registry can execute a tool with the given name.
     fn contains(&self, name: &str) -> bool;
 
+    /// Turn this registry into a stackable outer tool layer.
+    fn into_layer(self) -> ToolLayer<Self, NoopToolLayerHook>
+    where
+        Self: Sized,
+    {
+        ToolLayer::with_registry(self)
+    }
+
+    /// Turn this registry into a stackable outer tool layer with a custom hook.
+    fn into_layer_with_hook<H>(self, hook: H) -> ToolLayer<Self, H>
+    where
+        Self: Sized,
+    {
+        ToolLayer::with_registry(self).with_hook(hook)
+    }
+
     /// Execute a batch of tool calls, returning `(call_id, result)` pairs.
     ///
     /// `resume_map` maps `tool_call_id` → [`ResumePayload`] for calls that
     /// are resuming from a previous interrupt.
     ///
-    /// `ctx` provides runtime context (config, thread_id, run_id, metadata)
+    /// `ctx` provides the shared chat context for the current run
     /// that is forwarded to each tool.
     ///
     /// Implementors may choose sequential or parallel execution strategies.
@@ -53,7 +76,7 @@ pub trait ToolRegistry: Send + Sync {
         &'a self,
         calls: &'a [ParsedToolCall],
         resume_map: &'a HashMap<String, ResumePayload>,
-        ctx: &'a ToolContext,
+        ctx: &'a ChatCtx,
     ) -> Pin<Box<dyn Future<Output = Vec<(String, Result<BoxedToolResult<'a>, AgentError>)>> + 'a>>;
 }
 
@@ -71,6 +94,12 @@ impl DefaultToolRegistry {
             tools: Vec::new(),
             index: HashMap::new(),
         }
+    }
+
+    /// Builder-style tool registration for layer composition.
+    pub fn tool(mut self, tool: impl Tool + Send + Sync + 'static) -> Self {
+        self.register(tool);
+        self
     }
 
     /// Register a tool. Overwrites any previously registered tool with the same name.
@@ -112,20 +141,22 @@ impl ToolRegistry for DefaultToolRegistry {
         &'a self,
         calls: &'a [ParsedToolCall],
         resume_map: &'a HashMap<String, ResumePayload>,
-        ctx: &'a ToolContext,
+        ctx: &'a ChatCtx,
     ) -> Pin<Box<dyn Future<Output = Vec<(String, Result<BoxedToolResult<'a>, AgentError>)>> + 'a>>
     {
         Box::pin(async move {
-            let mut results = Vec::with_capacity(calls.len());
-            for tc in calls {
+            let futures = calls.iter().map(|tc| async move {
                 let resume = resume_map.get(&tc.id).cloned();
                 let result = match self.get(&tc.name) {
-                    Some(tool) => tool.execute_boxed(tc.arguments.clone(), resume, ctx).await,
+                    Some(tool) => {
+                        let tool_ctx = ctx.fork_for_tool(tc.id.clone(), tc.name.clone());
+                        tool.execute_boxed(tc.arguments.clone(), resume, tool_ctx).await
+                    }
                     None => Err(AgentError::ToolNotFound(tc.name.clone())),
                 };
-                results.push((tc.id.clone(), result));
-            }
-            results
+                (tc.id.clone(), result)
+            });
+            join_all(futures).await
         })
     }
 }

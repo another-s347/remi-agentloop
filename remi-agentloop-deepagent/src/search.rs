@@ -9,8 +9,8 @@ use async_stream::stream;
 use futures::Stream;
 
 use remi_core::error::AgentError;
-use remi_core::tool::{Tool, ToolContext, ToolOutput, ToolResult};
-use remi_core::types::ResumePayload;
+use remi_core::tool::{Tool, ToolOutput, ToolResult};
+use remi_core::types::{ChatCtx, ResumePayload};
 
 const EXA_API_URL: &str = "https://api.exa.ai/search";
 
@@ -57,7 +57,9 @@ impl ExaSearchTool {
 }
 
 impl Tool for ExaSearchTool {
-    fn name(&self) -> &str { "web_search" }
+    fn name(&self) -> &str {
+        "web_search"
+    }
     fn description(&self) -> &str {
         "Search the web using Exa. \
          Returns relevant results with titles, URLs, and content highlights. \
@@ -85,7 +87,7 @@ impl Tool for ExaSearchTool {
         &self,
         arguments: serde_json::Value,
         _resume: Option<ResumePayload>,
-        _ctx: &ToolContext,
+        _ctx: ChatCtx,
     ) -> impl std::future::Future<Output = Result<ToolResult<impl Stream<Item = ToolOutput>>, AgentError>>
     {
         let api_key = self.api_key.clone();

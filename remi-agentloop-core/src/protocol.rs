@@ -245,6 +245,7 @@ impl From<AgentEvent> for ProtocolEvent {
                 prompt_tokens,
                 completion_tokens,
             },
+            AgentEvent::Custom { event_type, extra } => ProtocolEvent::Custom { event_type, extra },
             AgentEvent::Done => ProtocolEvent::Done,
             AgentEvent::Cancelled => ProtocolEvent::Cancelled,
             AgentEvent::Error(e) => ProtocolEvent::Error {

@@ -40,22 +40,21 @@ pub mod workspace_fs;
 // ── Top-level re-exports ───────────────────────────────────────────────────────
 
 pub use agent::{DeepAgent, DeepAgentBuilder};
+pub use compress::CompressingLayer;
 pub use config_file::DeepAgentConfig;
 pub use events::{DeepAgentEvent, SkillEvent, TodoEvent};
-pub use compress::CompressingLayer;
 pub use registry::FileBackedRegistry;
 pub use search::{ExaSearchTool, TavilySearchTool};
-pub use skill::{
-    SkillLayer,
-    store::{FileSkillStore, InMemorySkillStore, SkillStore},
-};
 #[cfg(feature = "skill-virtual")]
 pub use skill::store::FsSkillStore;
+pub use skill::{
+    store::{FileSkillStore, InMemorySkillStore, SkillStore},
+    SkillLayer,
+};
 pub use sub_agent::{SubAgentEventStream, SubAgentToolAdapter};
 pub use task::SubAgentTaskTool;
-pub use todo::{TodoLayer, tools::TodoToolkit};
+pub use todo::{tools::TodoToolkit, TodoLayer};
 pub use workspace_fs::{
+    RootedFsCreateTool, RootedFsLsTool, RootedFsReadTool, RootedFsRemoveTool, RootedFsWriteTool,
     WorkspaceBashTool,
-    RootedFsReadTool, RootedFsWriteTool, RootedFsCreateTool,
-    RootedFsRemoveTool, RootedFsLsTool,
 };

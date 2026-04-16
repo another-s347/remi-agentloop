@@ -5,7 +5,7 @@ use std::time::Instant;
 use futures::StreamExt;
 use remi_agentloop::agent::Agent;
 use remi_agentloop::protocol::ProtocolEvent;
-use remi_agentloop::types::LoopInput;
+use remi_agentloop::types::{ChatCtx, LoopInput};
 use remi_agentloop_wasm::WasmAgent;
 use serde::Serialize;
 
@@ -64,7 +64,8 @@ async fn main() {
         }
     };
 
-    let agent = WasmAgent::from_file(&config.wasm_path).expect("failed to load benchmark WASM component");
+    let agent =
+        WasmAgent::from_file(&config.wasm_path).expect("failed to load benchmark WASM component");
 
     for _ in 0..config.warmup_rounds {
         let _ = run_round(&agent, config.total_tokens, config.chunk_tokens).await;
@@ -107,7 +108,7 @@ async fn run_round(agent: &WasmAgent, total_tokens: usize, chunk_tokens: usize) 
 
     let start = Instant::now();
     let stream = agent
-        .chat(LoopInput::start(spec_json))
+        .chat(ChatCtx::default(), LoopInput::start(spec_json))
         .await
         .expect("agent.chat failed");
     let batch_ready = start.elapsed();
@@ -152,7 +153,11 @@ async fn run_round(agent: &WasmAgent, total_tokens: usize, chunk_tokens: usize) 
     }
 }
 
-fn aggregate_metrics(total_tokens: usize, chunk_tokens: usize, rounds: &[RoundMetrics]) -> AggregateMetrics {
+fn aggregate_metrics(
+    total_tokens: usize,
+    chunk_tokens: usize,
+    rounds: &[RoundMetrics],
+) -> AggregateMetrics {
     let rounds_count = rounds.len().max(1) as f64;
     let avg = |selector: fn(&RoundMetrics) -> f64| -> f64 {
         rounds.iter().map(selector).sum::<f64>() / rounds_count
@@ -193,7 +198,9 @@ fn parse_args() -> Result<BenchmarkConfig, String> {
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--wasm" => {
-                let value = args.next().ok_or_else(|| "missing value for --wasm".to_string())?;
+                let value = args
+                    .next()
+                    .ok_or_else(|| "missing value for --wasm".to_string())?;
                 config.wasm_path = PathBuf::from(value);
             }
             "--tokens" => {

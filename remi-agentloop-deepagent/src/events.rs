@@ -4,6 +4,7 @@
 //! events emitted by the todo and skill layers.
 
 use remi_core::types::{AgentEvent, Message};
+use remi_core::tool::registry::AgentEventEnvelope;
 
 // ── TodoEvent ─────────────────────────────────────────────────────────────────
 
@@ -45,5 +46,18 @@ pub enum DeepAgentEvent {
 impl From<AgentEvent> for DeepAgentEvent {
     fn from(e: AgentEvent) -> Self {
         DeepAgentEvent::Agent(e)
+    }
+}
+
+impl AgentEventEnvelope for DeepAgentEvent {
+    fn from_agent_event(event: AgentEvent) -> Self {
+        DeepAgentEvent::Agent(event)
+    }
+
+    fn into_agent_event(self) -> Result<AgentEvent, Self> {
+        match self {
+            DeepAgentEvent::Agent(event) => Ok(event),
+            other => Err(other),
+        }
     }
 }

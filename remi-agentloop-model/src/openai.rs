@@ -10,8 +10,8 @@ use remi_core::agent::Agent;
 use remi_core::config::AgentConfig;
 pub use remi_core::config::RateLimitRetryPolicy;
 use remi_core::error::AgentError;
+use remi_core::types::{ChatCtx, ChatResponseChunk, ModelRequest, Role};
 use remi_transport::HttpTransport;
-use remi_core::types::{ChatRequest, ChatResponseChunk, Role};
 
 // ── OpenAI wire types (SSE payload parsing) ──────────────────────────────────
 
@@ -224,13 +224,14 @@ fn chunk_has_ttft_signal(chunk: &OAIChatCompletionChunk) -> bool {
 }
 
 impl<T: HttpTransport> Agent for OpenAIClient<T> {
-    type Request = ChatRequest;
+    type Request = ModelRequest;
     type Response = ChatResponseChunk;
     type Error = AgentError;
 
     fn chat(
         &self,
-        req: ChatRequest,
+        ctx: ChatCtx,
+        req: ModelRequest,
     ) -> impl Future<Output = Result<impl Stream<Item = ChatResponseChunk>, AgentError>> {
         let transport = self.transport.clone();
         let url = format!("{}/chat/completions", self.base_url);
@@ -243,10 +244,7 @@ impl<T: HttpTransport> Agent for OpenAIClient<T> {
             if req.model.is_empty() {
                 req.model = model;
             }
-            let rate_limit_retry = req
-                .rate_limit_retry
-                .clone()
-                .or(client_rate_limit_retry);
+            let rate_limit_retry = req.rate_limit_retry.clone().or(client_rate_limit_retry);
             req.stream = true;
             req.stream_options = Some(remi_core::types::StreamOptions {
                 include_usage: true,
@@ -322,6 +320,9 @@ impl<T: HttpTransport> Agent for OpenAIClient<T> {
                 let mut lines = std::pin::pin!(lines);
                 let mut ttft_logged = false;
                 while let Some(line) = lines.next().await {
+                    if ctx.is_cancelled() {
+                        break;
+                    }
                     if line.is_empty() || line.starts_with(':') {
                         continue;
                     }
@@ -397,7 +398,9 @@ impl<T: HttpTransport> Agent for OpenAIClient<T> {
                         }
                     }
                 }
-                yield ChatResponseChunk::Done;
+                if !ctx.is_cancelled() {
+                    yield ChatResponseChunk::Done;
+                }
             })
         }
     }
@@ -409,7 +412,7 @@ mod tests {
     use std::collections::VecDeque;
     use std::sync::{Arc, Mutex};
 
-    use remi_core::types::{ChatRequest, Message};
+    use remi_core::types::{Message, ModelRequest};
     use remi_transport::{HttpStreamingResponse, HttpTransport, HttpTransportError};
 
     #[derive(Clone)]
@@ -444,7 +447,8 @@ mod tests {
             _url: String,
             _headers: Vec<(String, String)>,
             _body: Vec<u8>,
-        ) -> impl Future<Output = Result<HttpStreamingResponse, HttpTransportError>> + Send {
+        ) -> impl Future<Output = Result<HttpStreamingResponse, HttpTransportError>> + Send
+        {
             let response = self
                 .responses
                 .lock()
@@ -464,8 +468,8 @@ mod tests {
         }
     }
 
-    fn request() -> ChatRequest {
-        ChatRequest {
+    fn request() -> ModelRequest {
+        ModelRequest {
             model: String::new(),
             messages: vec![Message::user("hello")],
             tools: None,
@@ -514,18 +518,20 @@ mod tests {
             },
         ]);
 
-        let client = OpenAIClient::with_transport(transport.clone(), "test-key").with_rate_limit_retry(
-            RateLimitRetryPolicy {
+        let client = OpenAIClient::with_transport(transport.clone(), "test-key")
+            .with_rate_limit_retry(RateLimitRetryPolicy {
                 max_retries: 1,
                 initial_delay_ms: 0,
                 max_delay_ms: 0,
                 multiplier: 2.0,
                 respect_retry_after: true,
-            },
-        );
+            });
 
         let result = futures::executor::block_on(async {
-            let stream = client.chat(request()).await.expect("chat should succeed");
+            let stream = client
+                .chat(ChatCtx::default(), request())
+                .await
+                .expect("chat should succeed");
             futures::pin_mut!(stream);
 
             let mut chunks = Vec::new();
@@ -535,7 +541,9 @@ mod tests {
             chunks
         });
 
-        assert!(matches!(result.first(), Some(ChatResponseChunk::Delta { content, .. }) if content == "hi"));
+        assert!(
+            matches!(result.first(), Some(ChatResponseChunk::Delta { content, .. }) if content == "hi")
+        );
         assert!(matches!(result.last(), Some(ChatResponseChunk::Done)));
         assert_eq!(transport.call_count(), 2);
     }
@@ -555,22 +563,24 @@ mod tests {
             },
         ]);
 
-        let client = OpenAIClient::with_transport(transport.clone(), "test-key").with_rate_limit_retry(
-            RateLimitRetryPolicy {
+        let client = OpenAIClient::with_transport(transport.clone(), "test-key")
+            .with_rate_limit_retry(RateLimitRetryPolicy {
                 max_retries: 1,
                 initial_delay_ms: 0,
                 max_delay_ms: 0,
                 multiplier: 2.0,
                 respect_retry_after: true,
-            },
-        );
+            });
 
-        let err = match futures::executor::block_on(client.chat(request())) {
+        let err = match futures::executor::block_on(client.chat(ChatCtx::default(), request())) {
             Ok(_) => panic!("chat should fail"),
             Err(err) => err,
         };
 
-        assert_eq!(err.to_string(), "Model error: HTTP 429 after 1 retries: still rate limited");
+        assert_eq!(
+            err.to_string(),
+            "Model error: HTTP 429 after 1 retries: still rate limited"
+        );
         assert_eq!(transport.call_count(), 2);
     }
 }

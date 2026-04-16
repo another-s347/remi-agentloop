@@ -114,20 +114,10 @@ fn run_build(args: BuildArgs) {
 
     for target in &args.targets {
         let success = match target {
-            Target::Wasip2 => build_wasip2(
-                &agent_path,
-                &agent_name,
-                &args.entry,
-                &output,
-                args.release,
-            ),
-            Target::Web => build_web(
-                &agent_path,
-                &agent_name,
-                &args.entry,
-                &output,
-                args.release,
-            ),
+            Target::Wasip2 => {
+                build_wasip2(&agent_path, &agent_name, &args.entry, &output, args.release)
+            }
+            Target::Web => build_web(&agent_path, &agent_name, &args.entry, &output, args.release),
         };
         if !success {
             ok = false;
@@ -184,7 +174,13 @@ fn run_precompile_step(triples: &[String], agent_name: &str, output: &Path) -> b
         // Normalise triple for use in a filename: replace non-alphanumeric chars with '_'
         let normalized: String = triple
             .chars()
-            .map(|c| if c.is_alphanumeric() || c == '_' { c } else { '-' })
+            .map(|c| {
+                if c.is_alphanumeric() || c == '_' {
+                    c
+                } else {
+                    '-'
+                }
+            })
             .collect();
         let out_path = output.join(format!("{agent_name}.{normalized}.cwasm"));
         print!("  {triple} → {} … ", out_path.display());

@@ -16,7 +16,7 @@ use crate::tool::Tool;
 use crate::tracing::{DynTracer, ResumeTrace, Tracer};
 use crate::types::{
     AgentEvent, ChatInput, ChatReplayCursor, ChatSessionBundle, Content, Message, MessageId,
-    Role, ThreadId, ToolCallOutcome,
+    Role, ThreadId, ToolCallOutcome, ChatCtx, ChatCtxState, LoopInput, RunId,
 };
 
 // ── Typestate markers ─────────────────────────────────────────────────────────
@@ -162,6 +162,11 @@ impl<M, S, C> AgentBuilder<M, S, C> {
 
     /// Replace the default in-process registry with a custom [`ToolRegistry`] implementation.
     ///
+    /// For stackable outer tool groups, prefer turning a registry into a
+    /// [`ToolLayer`](crate::tool::registry::ToolLayer) via
+    /// [`ToolRegistry::into_layer`](crate::tool::registry::ToolRegistry::into_layer)
+    /// and composing it with [`AgentExt::layer`](crate::agent::AgentExt::layer).
+    ///
     /// Note: any tools previously registered via [`.tool()`](Self::tool) will be discarded.
     pub fn with_registry(
         self,
@@ -264,10 +269,7 @@ impl<M, S, C> AgentBuilder<M, S, C> {
     ///     )
     ///     .build();
     /// ```
-    pub fn extra_options(
-        mut self,
-        options: serde_json::Map<String, serde_json::Value>,
-    ) -> Self {
+    pub fn extra_options(mut self, options: serde_json::Map<String, serde_json::Value>) -> Self {
         self.config.extra = serde_json::Value::Object(options);
         self
     }
@@ -276,16 +278,21 @@ impl<M, S, C> AgentBuilder<M, S, C> {
 impl<M: ChatModel, S, C> AgentBuilder<M, S, C> {
     /// Build into just the [`AgentLoop`] (no store / memory layer).
     ///
-    /// Use this when you need composable external tool calling:
+    /// Use this when you need stackable tool layers around the core loop:
     /// ```ignore
+    /// use remi_agentloop_core::agent::AgentExt;
+    /// use remi_agentloop_core::tool::registry::{DefaultToolRegistry, ToolRegistry};
+    ///
     /// let inner = AgentBuilder::new()
     ///     .model(oai)
     ///     .tool(Add::new())
     ///     .build_loop();
     ///
-    /// let mut state = inner.build_state(vec![]);
-    /// state.tool_definitions.extend(outer_defs);
-    /// let stream = inner.run(state, action, true);
+    /// let audit_tools = DefaultToolRegistry::new()
+    ///     .tool(AuditTool::new())
+    ///     .into_layer();
+    ///
+    /// let agent = inner.layer(audit_tools);
     /// ```
     pub fn build_loop(self) -> AgentLoop<M> {
         AgentLoop {
@@ -381,6 +388,53 @@ pub struct BuiltAgent<M: ChatModel, S = NoStore, C = NoCheckpointStore> {
 }
 
 impl<M: ChatModel, S: ContextStore, C: CheckpointStore> BuiltAgent<M, S, C> {
+    fn wrap_stream<'a, Inner>(
+        &'a self,
+        thread_id: ThreadId,
+        run_id: RunId,
+        initial_known_msg_count: usize,
+        inner_stream: Inner,
+    ) -> impl Stream<Item = AgentEvent> + 'a
+    where
+        Inner: Stream<Item = AgentEvent> + 'a,
+    {
+        stream! {
+            let mut known_msg_count = initial_known_msg_count;
+            let mut inner_stream = std::pin::pin!(inner_stream);
+            while let Some(event) = inner_stream.next().await {
+                match event {
+                    AgentEvent::Checkpoint(cp) => {
+                        if cp.state.messages.len() > known_msg_count {
+                            let new_msgs = cp.state.messages[known_msg_count..].to_vec();
+                            let _ = self.store.append_messages(&thread_id, new_msgs).await;
+                            known_msg_count = cp.state.messages.len();
+                        }
+                        let _ = self.checkpoint_store.save(cp).await;
+                    }
+                    AgentEvent::Done => {
+                        let _ = self.store.complete_run(&run_id).await;
+                        yield AgentEvent::Done;
+                    }
+                    AgentEvent::Interrupt { interrupts } => {
+                        let _ = self.store.complete_run(&run_id).await;
+                        yield AgentEvent::Interrupt { interrupts };
+                    }
+                    AgentEvent::Cancelled => {
+                        let _ = self.store.complete_run(&run_id).await;
+                        yield AgentEvent::Cancelled;
+                    }
+                    other => {
+                        yield other;
+                    }
+                }
+            }
+        }
+    }
+
+    fn build_chat_ctx_state(&self) -> ChatCtxState {
+        ChatCtxState::default()
+    }
+
     /// Thin wrapper around [`AgentLoop::run`] that adds memory + checkpoint persistence.
     ///
     /// Observes the inner stream:
@@ -396,37 +450,14 @@ impl<M: ChatModel, S: ContextStore, C: CheckpointStore> BuiltAgent<M, S, C> {
     ) -> impl Stream<Item = AgentEvent> + 'a {
         let thread_id = state.thread_id.clone();
         let run_id = state.run_id.clone();
-        let inner_stream = self.inner.run(state, action, emit_run_start);
-
-        stream! {
-            let mut known_msg_count = 0usize;
-            let mut inner_stream = std::pin::pin!(inner_stream);
-            while let Some(event) = inner_stream.next().await {
-                match event {
-                    AgentEvent::Checkpoint(cp) => {
-                        // Persist new messages to context store
-                        if cp.state.messages.len() > known_msg_count {
-                            let new_msgs = cp.state.messages[known_msg_count..].to_vec();
-                            let _ = self.store.append_messages(&thread_id, new_msgs).await;
-                            known_msg_count = cp.state.messages.len();
-                        }
-                        // Persist checkpoint — swallow event
-                        let _ = self.checkpoint_store.save(cp).await;
-                    }
-                    AgentEvent::Done => {
-                        let _ = self.store.complete_run(&run_id).await;
-                        yield AgentEvent::Done;
-                    }
-                    AgentEvent::Interrupt { interrupts } => {
-                        let _ = self.store.complete_run(&run_id).await;
-                        yield AgentEvent::Interrupt { interrupts };
-                    }
-                    other => {
-                        yield other;
-                    }
-                }
-            }
-        }
+        let initial_known_msg_count = state.messages.len();
+        let ctx = ChatCtx::with_ids(state.thread_id.clone(), state.run_id.clone(), ChatCtxState {
+            user_state: state.user_state.clone(),
+            metadata: state.config.metadata.clone(),
+            ..ChatCtxState::default()
+        });
+        let inner_stream = self.inner.run(ctx, state, action, emit_run_start);
+        self.wrap_stream(thread_id, run_id, initial_known_msg_count, inner_stream)
     }
 
     /// Cancel a run and produce a `Cancelled` checkpoint.
@@ -442,6 +473,7 @@ impl<M: ChatModel, S: ContextStore, C: CheckpointStore> BuiltAgent<M, S, C> {
         mut state: crate::state::AgentState,
         partial_response: Option<String>,
     ) -> impl Stream<Item = AgentEvent> + 'a {
+        let initial_known_msg_count = state.messages.len();
         // Inject the partial assistant message before handing off to cancel_run.
         if let Some(text) = partial_response {
             if !text.is_empty() {
@@ -461,30 +493,31 @@ impl<M: ChatModel, S: ContextStore, C: CheckpointStore> BuiltAgent<M, S, C> {
         let thread_id = state.thread_id.clone();
         let run_id = state.run_id.clone();
         let inner_stream = self.inner.cancel_run(state);
+        self.wrap_stream(thread_id, run_id, initial_known_msg_count, inner_stream)
+    }
 
-        stream! {
-            let mut known_msg_count = 0usize;
-            let mut inner_stream = std::pin::pin!(inner_stream);
-            while let Some(event) = inner_stream.next().await {
-                match event {
-                    AgentEvent::Checkpoint(cp) => {
-                        if cp.state.messages.len() > known_msg_count {
-                            let new_msgs = cp.state.messages[known_msg_count..].to_vec();
-                            let _ = self.store.append_messages(&thread_id, new_msgs).await;
-                            known_msg_count = cp.state.messages.len();
-                        }
-                        let _ = self.checkpoint_store.save(cp).await;
-                    }
-                    AgentEvent::Cancelled => {
-                        let _ = self.store.complete_run(&run_id).await;
-                        yield AgentEvent::Cancelled;
-                    }
-                    other => {
-                        yield other;
-                    }
-                }
+    /// Cancel an in-progress run inside a thread and persist any partial output.
+    pub async fn cancel_in_thread(
+        &self,
+        thread_id: &ThreadId,
+        run_id: RunId,
+        partial_response: Option<String>,
+    ) -> Result<Pin<Box<dyn Stream<Item = AgentEvent> + '_>>, AgentError> {
+        let messages = self.store.get_messages(thread_id).await?;
+        let cp = self.checkpoint_store.load_latest_by_run(&run_id).await?;
+        let state = match cp {
+            Some(cp) => cp.state,
+            None => {
+                let mut state = self.inner.build_state(messages);
+                state.thread_id = thread_id.clone();
+                state.run_id = run_id;
+                state.system_prompt = None;
+                state
             }
-        }
+        };
+
+        Ok(Box::pin(self.cancel_loop(state, partial_response))
+            as Pin<Box<dyn Stream<Item = AgentEvent> + '_>>)
     }
 
     /// Resume execution from the latest checkpoint for a given thread.
@@ -515,6 +548,11 @@ impl<M: ChatModel, S: ContextStore, C: CheckpointStore> BuiltAgent<M, S, C> {
                 };
                 if let Some(t) = self.inner.tracer.as_deref() {
                     t.on_resume(&ResumeTrace {
+                        span: crate::types::SpanNode::derived(
+                            crate::types::SpanKind::Run,
+                            format!("run:{}", cp.state.run_id.0),
+                            None,
+                        ),
                         run_id: cp.state.run_id.clone(),
                         payloads_count,
                         outcomes: Vec::new(),
@@ -686,9 +724,10 @@ impl<M: ChatModel> Agent for BuiltAgent<M, NoStore, NoCheckpointStore> {
     /// Stateless mode: delegates to the inner [`AgentLoop`].
     fn chat(
         &self,
+        ctx: crate::types::ChatCtx,
         input: crate::types::LoopInput,
     ) -> impl Future<Output = Result<impl Stream<Item = AgentEvent>, AgentError>> {
-        self.inner.chat(input)
+        self.inner.chat(ctx, input)
     }
 }
 
@@ -761,37 +800,37 @@ impl<M: ChatModel, S: ContextStore, C: CheckpointStore> BuiltAgent<M, S, C> {
         }
 
         match input {
-            ChatInput::Message { content: user_content, user_name } => {
+            ChatInput::Message { message } => {
                 let run_id = self.store.create_run(thread_id).await?;
+                let initial_known_msg_count = messages.len();
+                let ctx = ChatCtx::with_ids(
+                    thread_id.clone(),
+                    run_id.clone(),
+                    self.build_chat_ctx_state(),
+                );
 
-                // Append user message to store + state
-                let user_msg = Message {
-                    id: crate::types::MessageId::new(),
-                    role: Role::User,
-                    content: user_content,
-                    tool_calls: None,
-                    tool_call_id: None,
-                    name: user_name,
-                    reasoning_content: None,
-                    metadata: None,
-                };
-                self.store
-                    .append_message(thread_id, user_msg.clone())
+                let inner_stream = self
+                    .inner
+                    .chat(
+                        ctx,
+                        LoopInput::Start {
+                            message,
+                            history: vec![],
+                            extra_tools: vec![],
+                            model: None,
+                            temperature: None,
+                            max_tokens: None,
+                            metadata: None,
+                        },
+                    )
                     .await?;
-                messages.push(user_msg);
 
-                let mut state = self.inner.build_state(messages);
-                state.thread_id = thread_id.clone();
-                state.run_id = run_id;
-                state.system_prompt = None;
-
-                // Action is empty ToolResults because user message is already in state.messages;
-                // step() will see it and call the model.
-                Ok(Box::pin(self.run_loop(
-                    state,
-                    Action::ToolResults(vec![]),
-                    false,
-                )))
+                Ok(Box::pin(self.wrap_stream(
+                    thread_id.clone(),
+                    run_id,
+                    initial_known_msg_count,
+                    inner_stream,
+                )) as Pin<Box<dyn Stream<Item = AgentEvent> + '_>>)
             }
 
             ChatInput::Resume {
@@ -839,73 +878,37 @@ impl<M: ChatModel, S: ContextStore, C: CheckpointStore> BuiltAgent<M, S, C> {
                     });
                 }
 
-                let mut state = self.inner.build_state(messages);
+                let mut state = self.inner.build_state(messages.clone());
                 state.thread_id = thread_id.clone();
-                state.run_id = run_id;
+                state.run_id = run_id.clone();
                 state.system_prompt = None;
 
-                // step() will append tool_result messages to state.messages,
-                // run_loop will detect & persist the new messages automatically.
-                let payloads_count = outcomes.len();
-                if let Some(t) = self.inner.tracer.as_deref() {
-                    t.on_resume(&ResumeTrace {
-                        run_id: state.run_id.clone(),
-                        payloads_count,
-                        outcomes: outcomes
-                            .iter()
-                            .map(|outcome| match outcome {
-                                ToolCallOutcome::Result {
-                                    tool_call_id,
-                                    tool_name,
-                                    content,
-                                } => crate::tracing::ToolOutcomeTrace {
-                                    tool_call_id: tool_call_id.clone(),
-                                    tool_name: tool_name.clone(),
-                                    result: Some(content.text_content()),
-                                    error: None,
-                                },
-                                ToolCallOutcome::Error {
-                                    tool_call_id,
-                                    tool_name,
-                                    error,
-                                } => crate::tracing::ToolOutcomeTrace {
-                                    tool_call_id: tool_call_id.clone(),
-                                    tool_name: tool_name.clone(),
-                                    result: None,
-                                    error: Some(error.clone()),
-                                },
-                            })
-                            .collect(),
-                        timestamp: chrono::Utc::now(),
-                    })
-                    .await;
-                }
-                Ok(Box::pin(self.run_loop(
-                    state,
-                    Action::ToolResults(outcomes),
-                    false,
-                )))
+                let initial_known_msg_count = state.messages.len();
+                let mut ctx_state = self.build_chat_ctx_state();
+                ctx_state.user_state = state.user_state.clone();
+                ctx_state.metadata = state.config.metadata.clone();
+                let ctx = ChatCtx::with_ids(thread_id.clone(), run_id.clone(), ctx_state);
+
+                let inner_stream = self
+                    .inner
+                    .chat(
+                        ctx,
+                        LoopInput::Resume {
+                            state,
+                            pending_interrupts,
+                            results: outcomes,
+                        },
+                    )
+                    .await?;
+
+                Ok(Box::pin(self.wrap_stream(
+                    thread_id.clone(),
+                    run_id,
+                    initial_known_msg_count,
+                    inner_stream,
+                )) as Pin<Box<dyn Stream<Item = AgentEvent> + '_>>)
             }
 
-            ChatInput::Cancel {
-                run_id,
-                partial_response,
-            } => {
-                // Load the latest checkpoint for this run to get the current state
-                let cp = self.checkpoint_store.load_latest_by_run(&run_id).await?;
-                let state = match cp {
-                    Some(cp) => cp.state,
-                    None => {
-                        // No checkpoint yet — build state from stored messages
-                        let mut state = self.inner.build_state(messages);
-                        state.thread_id = thread_id.clone();
-                        state.run_id = run_id;
-                        state.system_prompt = None;
-                        state
-                    }
-                };
-                Ok(Box::pin(self.cancel_loop(state, partial_response)))
-            }
         }
     }
 }

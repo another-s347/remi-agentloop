@@ -1,10 +1,10 @@
 use async_stream::stream;
 use futures::{Stream, StreamExt};
 use std::future::Future;
-#[cfg(target_arch = "wasm32")]
-use web_time::Instant;
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::Instant;
+#[cfg(target_arch = "wasm32")]
+use web_time::Instant;
 
 use crate::agent::{Agent, Layer};
 use crate::error::AgentError;
@@ -12,7 +12,9 @@ use crate::tracing::{
     ExternalToolResultTrace, ModelEndTrace, ResumeTrace, RunEndTrace, RunStartTrace, RunStatus,
     ToolCallTrace, ToolExecutionHandoffTrace, ToolOutcomeTrace, TurnStartTrace,
 };
-use crate::types::{AgentEvent, LoopInput, ToolCallOutcome};
+use crate::types::{
+    AgentEvent, ChatCtx, LoopInput, SpanKind, SpanNode, ToolCallOutcome,
+};
 
 // ── TracingLayer ──────────────────────────────────────────────────────────────
 
@@ -103,35 +105,46 @@ where
 
     fn chat(
         &self,
+        ctx: ChatCtx,
         req: crate::types::LoopInput,
     ) -> impl Future<Output = Result<impl Stream<Item = AgentEvent>, AgentError>> {
         async move {
+            let root_span = SpanNode::derived(
+                SpanKind::Run,
+                format!("run:{}", ctx.run_id().0),
+                ctx.snapshot().state.span.as_ref(),
+            );
+
             let initial_run_id = match &req {
-                LoopInput::Resume { state, results } => {
+                LoopInput::Resume { state, results, .. } => {
                     let outcomes = results.iter().map(outcome_trace).collect::<Vec<_>>();
-                    self.tracer.on_resume(&ResumeTrace {
-                        run_id: state.run_id.clone(),
-                        payloads_count: results.len(),
-                        outcomes: outcomes.clone(),
-                        timestamp: chrono::Utc::now(),
-                    }).await;
-                    for outcome in &outcomes {
-                        self.tracer.on_external_tool_result(&ExternalToolResultTrace {
+                    self.tracer
+                        .on_resume(&ResumeTrace {
+                            span: root_span.clone(),
                             run_id: state.run_id.clone(),
-                            tool_call_id: outcome.tool_call_id.clone(),
-                            tool_name: outcome.tool_name.clone(),
-                            result: outcome.result.clone(),
-                            error: outcome.error.clone(),
+                            payloads_count: results.len(),
+                            outcomes: outcomes.clone(),
                             timestamp: chrono::Utc::now(),
-                        }).await;
+                        })
+                        .await;
+                    for outcome in &outcomes {
+                        self.tracer
+                            .on_external_tool_result(&ExternalToolResultTrace {
+                                run_id: state.run_id.clone(),
+                                tool_call_id: outcome.tool_call_id.clone(),
+                                tool_name: outcome.tool_name.clone(),
+                                result: outcome.result.clone(),
+                                error: outcome.error.clone(),
+                                timestamp: chrono::Utc::now(),
+                            })
+                            .await;
                     }
                     state.run_id.clone()
                 }
-                LoopInput::Cancel { state } => state.run_id.clone(),
-                LoopInput::Start { .. } => crate::types::RunId::new(),
+                LoopInput::Start { .. } => ctx.run_id(),
             };
 
-            let inner_stream = self.inner.chat(req).await?;
+            let inner_stream = self.inner.chat(ctx, req).await?;
 
             Ok(stream! {
                 let mut inner_stream = std::pin::pin!(inner_stream);
@@ -147,86 +160,124 @@ where
                     match &event {
                         AgentEvent::RunStart { run_id: rid, .. } => {
                             run_id = rid.clone();
-                            self.tracer.on_run_start(&RunStartTrace {
-                                thread_id: None,
-                                run_id: run_id.clone(),
-                                model: String::new(),
-                                system_prompt: None,
-                                input_messages: vec![],
-                                metadata: None,
-                                timestamp: chrono::Utc::now(),
-                            }).await;
+                            self.tracer
+                                .on_run_start(&RunStartTrace {
+                                    span: root_span.clone(),
+                                    thread_id: None,
+                                    run_id: run_id.clone(),
+                                    model: String::new(),
+                                    system_prompt: None,
+                                    input_messages: vec![],
+                                    metadata: None,
+                                    timestamp: chrono::Utc::now(),
+                                })
+                                .await;
                         }
                         AgentEvent::TurnStart { turn: t } => {
                             turn = *t;
-                            self.tracer.on_turn_start(&TurnStartTrace {
-                                run_id: run_id.clone(),
-                                turn,
-                                timestamp: chrono::Utc::now(),
-                            }).await;
+                            self.tracer
+                                .on_turn_start(&TurnStartTrace {
+                                    span: root_span.clone(),
+                                    run_id: run_id.clone(),
+                                    turn,
+                                    timestamp: chrono::Utc::now(),
+                                })
+                                .await;
                         }
-                        AgentEvent::Usage { prompt_tokens, completion_tokens } => {
+                        AgentEvent::Usage {
+                            prompt_tokens,
+                            completion_tokens,
+                        } => {
                             total_prompt_tokens += prompt_tokens;
                             total_completion_tokens += completion_tokens;
-                            // ModelEnd fires on Usage
-                            self.tracer.on_model_end(&ModelEndTrace {
-                                run_id: run_id.clone(),
-                                turn,
-                                call_index: model_call_seq,
-                                response_text: None,
-                                tool_calls: vec![],
-                                prompt_tokens: *prompt_tokens,
-                                completion_tokens: *completion_tokens,
-                                duration: run_start_time.elapsed(),
-                                timestamp: chrono::Utc::now(),
-                            }).await;
+                            self.tracer
+                                .on_model_end(&ModelEndTrace {
+                                    span: root_span.derived_child(SpanKind::Model, format!("turn:{turn}")),
+                                    run_id: run_id.clone(),
+                                    turn,
+                                    call_index: model_call_seq,
+                                    response_text: None,
+                                    tool_calls: vec![],
+                                    prompt_tokens: *prompt_tokens,
+                                    completion_tokens: *completion_tokens,
+                                    duration: run_start_time.elapsed(),
+                                    timestamp: chrono::Utc::now(),
+                                })
+                                .await;
                             model_call_seq += 1;
                         }
                         AgentEvent::Done => {
-                            self.tracer.on_run_end(&RunEndTrace {
-                                run_id: run_id.clone(),
-                                status: RunStatus::Completed,
-                                output_messages: vec![],
-                                total_turns: turn,
-                                total_prompt_tokens,
-                                total_completion_tokens,
-                                duration: run_start_time.elapsed(),
-                                error: None,
-                                timestamp: chrono::Utc::now(),
-                            }).await;
+                            self.tracer
+                                .on_run_end(&RunEndTrace {
+                                    span: root_span.clone(),
+                                    run_id: run_id.clone(),
+                                    status: RunStatus::Completed,
+                                    output_messages: vec![],
+                                    total_turns: turn,
+                                    total_prompt_tokens,
+                                    total_completion_tokens,
+                                    duration: run_start_time.elapsed(),
+                                    error: None,
+                                    timestamp: chrono::Utc::now(),
+                                })
+                                .await;
+                        }
+                        AgentEvent::Cancelled => {
+                            self.tracer
+                                .on_run_end(&RunEndTrace {
+                                    span: root_span.clone(),
+                                    run_id: run_id.clone(),
+                                    status: RunStatus::Cancelled,
+                                    output_messages: vec![],
+                                    total_turns: turn,
+                                    total_prompt_tokens,
+                                    total_completion_tokens,
+                                    duration: run_start_time.elapsed(),
+                                    error: None,
+                                    timestamp: chrono::Utc::now(),
+                                })
+                                .await;
                         }
                         AgentEvent::Error(e) => {
-                            self.tracer.on_run_end(&RunEndTrace {
-                                run_id: run_id.clone(),
-                                status: RunStatus::Error,
-                                output_messages: vec![],
-                                total_turns: turn,
-                                total_prompt_tokens,
-                                total_completion_tokens,
-                                duration: run_start_time.elapsed(),
-                                error: Some(e.to_string()),
-                                timestamp: chrono::Utc::now(),
-                            }).await;
+                            self.tracer
+                                .on_run_end(&RunEndTrace {
+                                    span: root_span.clone(),
+                                    run_id: run_id.clone(),
+                                    status: RunStatus::Error,
+                                    output_messages: vec![],
+                                    total_turns: turn,
+                                    total_prompt_tokens,
+                                    total_completion_tokens,
+                                    duration: run_start_time.elapsed(),
+                                    error: Some(e.to_string()),
+                                    timestamp: chrono::Utc::now(),
+                                })
+                                .await;
                         }
                         AgentEvent::NeedToolExecution {
                             state: _,
                             tool_calls,
                             completed_results,
                         } => {
-                            self.tracer.on_tool_execution_handoff(&ToolExecutionHandoffTrace {
-                                run_id: run_id.clone(),
-                                turn,
-                                tool_calls: tool_calls.iter().map(|tc| ToolCallTrace {
-                                    id: tc.id.clone(),
-                                    name: tc.name.clone(),
-                                    arguments: tc.arguments.clone(),
-                                    result: None,
-                                    interrupted: false,
-                                    duration: std::time::Duration::ZERO,
-                                }).collect(),
-                                completed_results: completed_results.iter().map(outcome_trace).collect(),
-                                timestamp: chrono::Utc::now(),
-                            }).await;
+                            self.tracer
+                                .on_tool_execution_handoff(&ToolExecutionHandoffTrace {
+                                    run_id: run_id.clone(),
+                                    turn,
+                                    tool_calls: tool_calls
+                                        .iter()
+                                        .map(|tc| ToolCallTrace {
+                                            id: tc.id.clone(),
+                                            name: tc.name.clone(),
+                                            arguments: tc.arguments.clone(),
+                                            result: None,
+                                            interrupted: false,
+                                            duration: std::time::Duration::ZERO,
+                                        })
+                                        .collect(),
+                                    completed_results: completed_results.iter().map(outcome_trace).collect(),
+                                    timestamp: chrono::Utc::now(),
+                                })
+                                .await;
                         }
                         _ => {}
                     }

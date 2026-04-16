@@ -7,15 +7,15 @@ use remi_agentloop_core::agent::Agent;
 use remi_agentloop_core::builder::AgentBuilder;
 use remi_agentloop_core::error::AgentError;
 use remi_agentloop_core::tool::{
-    FunctionDefinition, Tool, ToolContext, ToolDefinition, ToolDefinitionContext, ToolOutput,
+    FunctionDefinition, Tool, ToolDefinition, ToolDefinitionContext, ToolOutput,
     ToolResult,
 };
-use remi_agentloop_core::types::{AgentEvent, ChatRequest, ChatResponseChunk, LoopInput};
+use remi_agentloop_core::types::{AgentEvent, ChatCtx, ChatResponseChunk, LoopInput, ModelRequest};
 use serde_json::json;
 
 #[derive(Clone)]
 struct RecordingModel {
-    requests: Arc<Mutex<Vec<ChatRequest>>>,
+    requests: Arc<Mutex<Vec<ModelRequest>>>,
     responses: Arc<Mutex<VecDeque<Vec<ChatResponseChunk>>>>,
 }
 
@@ -27,18 +27,19 @@ impl RecordingModel {
         }
     }
 
-    fn requests(&self) -> Vec<ChatRequest> {
+    fn requests(&self) -> Vec<ModelRequest> {
         self.requests.lock().unwrap().clone()
     }
 }
 
 impl Agent for RecordingModel {
-    type Request = ChatRequest;
+    type Request = ModelRequest;
     type Response = ChatResponseChunk;
     type Error = AgentError;
 
     async fn chat(
         &self,
+        _ctx: ChatCtx,
         req: Self::Request,
     ) -> Result<impl Stream<Item = Self::Response>, Self::Error> {
         self.requests.lock().unwrap().push(req);
@@ -83,9 +84,11 @@ impl Tool for MetadataHintTool {
         &self,
         _arguments: serde_json::Value,
         _resume: Option<remi_agentloop_core::types::ResumePayload>,
-        _ctx: &ToolContext,
+        _ctx: &ChatCtx,
     ) -> Result<ToolResult<impl Stream<Item = ToolOutput>>, AgentError> {
-        Ok(ToolResult::Output(stream::iter(vec![ToolOutput::text("ok")])))
+        Ok(ToolResult::Output(stream::iter(vec![ToolOutput::text(
+            "ok",
+        )])))
     }
 }
 
@@ -121,11 +124,14 @@ impl Tool for StatefulPromptTool {
         &self,
         _arguments: serde_json::Value,
         _resume: Option<remi_agentloop_core::types::ResumePayload>,
-        ctx: &ToolContext,
+        ctx: &ChatCtx,
     ) -> Result<ToolResult<impl Stream<Item = ToolOutput>>, AgentError> {
-        let mut user_state = ctx.user_state.write().unwrap();
-        user_state["status"] = json!("warm");
-        Ok(ToolResult::Output(stream::iter(vec![ToolOutput::text("updated")])) )
+        ctx.update_user_state(|user_state| {
+            user_state["status"] = json!("warm");
+        });
+        Ok(ToolResult::Output(stream::iter(vec![ToolOutput::text(
+            "updated",
+        )])))
     }
 }
 
@@ -142,14 +148,20 @@ async fn metadata_extra_prompt_is_in_first_request() {
         .build_loop();
 
     let mut stream = agent
-        .chat(LoopInput::start("hello").metadata(json!({ "tool_hint": "prefer yaml" })))
+        .chat(
+            ChatCtx::default(),
+            LoopInput::start("hello").metadata(json!({ "tool_hint": "prefer yaml" })),
+        )
         .await
         .unwrap();
     drain_events(&mut stream).await;
 
     let requests = model.requests();
     let tools = requests[0].tools.as_ref().unwrap();
-    assert_eq!(tools[0].function.extra_prompt.as_deref(), Some("prefer yaml"));
+    assert_eq!(
+        tools[0].function.extra_prompt.as_deref(),
+        Some("prefer yaml")
+    );
 }
 
 #[tokio::test]
@@ -176,17 +188,26 @@ async fn user_state_change_refreshes_next_request_extra_prompt() {
         .max_turns(4)
         .build_loop();
 
-    let mut stream = agent.chat(LoopInput::start("hello")).await.unwrap();
+    let mut stream = agent
+        .chat(ChatCtx::default(), LoopInput::start("hello"))
+        .await
+        .unwrap();
     drain_events(&mut stream).await;
 
     let requests = model.requests();
     assert_eq!(requests.len(), 2);
     assert_eq!(
-        requests[0].tools.as_ref().unwrap()[0].function.extra_prompt.as_deref(),
+        requests[0].tools.as_ref().unwrap()[0]
+            .function
+            .extra_prompt
+            .as_deref(),
         Some("status=cold")
     );
     assert_eq!(
-        requests[1].tools.as_ref().unwrap()[0].function.extra_prompt.as_deref(),
+        requests[1].tools.as_ref().unwrap()[0]
+            .function
+            .extra_prompt
+            .as_deref(),
         Some("status=warm")
     );
 }
@@ -211,12 +232,18 @@ async fn extra_tools_preserve_extra_prompt() {
     };
 
     let mut stream = agent
-        .chat(LoopInput::start("hello").extra_tools(vec![extra_tool]))
+        .chat(
+            ChatCtx::default(),
+            LoopInput::start("hello").extra_tools(vec![extra_tool]),
+        )
         .await
         .unwrap();
     drain_events(&mut stream).await;
 
     let requests = model.requests();
     let tools = requests[0].tools.as_ref().unwrap();
-    assert_eq!(tools[0].function.extra_prompt.as_deref(), Some("external runtime note"));
+    assert_eq!(
+        tools[0].function.extra_prompt.as_deref(),
+        Some("external runtime note")
+    );
 }

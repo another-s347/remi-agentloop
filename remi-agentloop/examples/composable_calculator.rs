@@ -26,12 +26,11 @@
 //!   REMI_API_KEY=... REMI_BASE_URL=... REMI_MODEL=... \
 //!     cargo run --example composable_calculator --features http-client
 
-use std::future::Future;
-use std::sync::{Arc, RwLock};
 use async_stream::stream;
 use futures::{Stream, StreamExt};
 use remi_agentloop::prelude::*;
 use remi_agentloop::tool_macro as tool;
+use std::future::Future;
 
 // ── Inner tools (auto-executed by AgentLoop) ─────────────────────────────────
 
@@ -104,21 +103,40 @@ where
 
     fn chat(
         &self,
+        ctx: ChatCtx,
         input: LoopInput,
     ) -> impl Future<Output = Result<impl Stream<Item = AgentEvent>, AgentError>> {
         async move {
             // Prepare the input for the inner agent
             let first_input = match input {
-                LoopInput::Start { content, history, mut extra_tools, model, temperature, max_tokens, metadata } => {
+                LoopInput::Start {
+                    content,
+                    history,
+                    mut extra_tools,
+                    model,
+                    temperature,
+                    max_tokens,
+                    metadata,
+                    message_metadata,
+                    user_name,
+                } => {
                     // Inject our tool definitions and pass down
                     let user_state = serde_json::Value::Null;
                     extra_tools.extend(self.tools.definitions(&user_state));
-                    LoopInput::Start { content, history, extra_tools, model, temperature, max_tokens, metadata }
+                    LoopInput::Start {
+                        content,
+                        history,
+                        extra_tools,
+                        model,
+                        temperature,
+                        max_tokens,
+                        metadata,
+                        message_metadata,
+                        user_name,
+                    }
                 }
                 // Resume passes straight through — state belongs to innermost
                 resume @ LoopInput::Resume { .. } => resume,
-                // Cancel also passes through unchanged
-                cancel @ LoopInput::Cancel { .. } => cancel,
             };
 
             let mut next_input = Some(first_input);
@@ -127,7 +145,7 @@ where
                 loop {
                     let input = next_input.take().unwrap();
 
-                    let inner_stream = match self.inner.chat(input).await {
+                    let inner_stream = match self.inner.chat(ctx.clone(), input).await {
                         Ok(s) => s,
                         Err(e) => {
                             yield AgentEvent::Error(e.into());
@@ -155,15 +173,12 @@ where
                                 let mut all_outcomes = completed_results;
                                 if !mine.is_empty() {
                                     let resume_map = std::collections::HashMap::new();
-                                    let tool_ctx = ToolContext {
-                                        config: AgentConfig::default(),
-                                        thread_id: Some(state.thread_id.clone()),
+                                    let tool_ctx = ChatCtx::new(ChatCtxState {
+                                        thread_id: state.thread_id.clone(),
                                         run_id: state.run_id.clone(),
-                                        metadata: None,
-                                        user_state: Arc::new(RwLock::new(
-                                            state.user_state.clone(),
-                                        )),
-                                    };
+                                        user_state: state.user_state.clone(),
+                                        ..ChatCtxState::default()
+                                    });
 
                                     let results = self
                                         .tools
@@ -309,7 +324,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         eprintln!("    (history: {} messages)", history.len());
 
         let input = LoopInput::start(question.to_string()).history(history.clone());
-        let stream = agent.chat(input).await?;
+        let stream = agent.chat(ChatCtx::default(), input).await?;
         let mut stream = std::pin::pin!(stream);
 
         while let Some(event) = stream.next().await {
@@ -346,7 +361,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         eprintln!();
     }
 
-    eprintln!("═══ All {n} turns complete, {m} messages in history ═══",
+    eprintln!(
+        "═══ All {n} turns complete, {m} messages in history ═══",
         n = questions.len(),
         m = history.len(),
     );

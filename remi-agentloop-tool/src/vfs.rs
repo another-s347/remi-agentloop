@@ -12,4 +12,3 @@ pub use crate::bkfs::{FsCreateTool, FsLsTool, FsReadTool, FsRemoveTool, FsToolki
 /// `FsToolkit` provides five focused tools instead. Use `.read()`,
 /// `.write()`, `.mkdir()`, `.remove()`, and `.ls()` to obtain them.
 pub type VirtualFsTool = FsToolkit;
-

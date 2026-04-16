@@ -3,8 +3,8 @@
 use async_stream::stream;
 use futures::Stream;
 use remi_core::error::AgentError;
-use remi_core::tool::{Tool, ToolContext, ToolOutput, ToolResult};
-use remi_core::types::ResumePayload;
+use remi_core::tool::{Tool, ToolOutput, ToolResult};
+use remi_core::types::{ChatCtx, ResumePayload};
 use serde_json::json;
 use std::sync::Arc;
 
@@ -22,7 +22,9 @@ pub struct SkillSaveTool<S> {
 }
 
 impl<S: SkillStore + 'static> Tool for SkillSaveTool<S> {
-    fn name(&self) -> &str { "skill__save" }
+    fn name(&self) -> &str {
+        "skill__save"
+    }
     fn description(&self) -> &str {
         "Save a reusable skill as a named markdown document. Use this to record step-by-step procedures, best practices, or any knowledge worth reusing in later sessions."
     }
@@ -42,7 +44,7 @@ impl<S: SkillStore + 'static> Tool for SkillSaveTool<S> {
         &self,
         arguments: serde_json::Value,
         _resume: Option<ResumePayload>,
-        _ctx: &ToolContext,
+        _ctx: ChatCtx,
     ) -> Result<ToolResult<impl Stream<Item = ToolOutput>>, AgentError> {
         let name = arguments["name"]
             .as_str()
@@ -80,7 +82,9 @@ pub struct SkillGetTool<S> {
 }
 
 impl<S: SkillStore + 'static> Tool for SkillGetTool<S> {
-    fn name(&self) -> &str { "skill__get" }
+    fn name(&self) -> &str {
+        "skill__get"
+    }
     fn description(&self) -> &str {
         "Retrieve the full markdown content of a previously saved skill by name."
     }
@@ -98,7 +102,7 @@ impl<S: SkillStore + 'static> Tool for SkillGetTool<S> {
         &self,
         arguments: serde_json::Value,
         _resume: Option<ResumePayload>,
-        _ctx: &ToolContext,
+        _ctx: ChatCtx,
     ) -> Result<ToolResult<impl Stream<Item = ToolOutput>>, AgentError> {
         let name = arguments["name"]
             .as_str()
@@ -123,7 +127,9 @@ pub struct SkillListTool<S> {
 }
 
 impl<S: SkillStore + 'static> Tool for SkillListTool<S> {
-    fn name(&self) -> &str { "skill__list" }
+    fn name(&self) -> &str {
+        "skill__list"
+    }
     fn description(&self) -> &str {
         "List the names of all saved skills."
     }
@@ -135,7 +141,7 @@ impl<S: SkillStore + 'static> Tool for SkillListTool<S> {
         &self,
         _arguments: serde_json::Value,
         _resume: Option<ResumePayload>,
-        _ctx: &ToolContext,
+        _ctx: ChatCtx,
     ) -> Result<ToolResult<impl Stream<Item = ToolOutput>>, AgentError> {
         let store = self.store.clone();
         let names = store.list().await?;
@@ -158,7 +164,9 @@ pub struct SkillDeleteTool<S> {
 }
 
 impl<S: SkillStore + 'static> Tool for SkillDeleteTool<S> {
-    fn name(&self) -> &str { "skill__delete" }
+    fn name(&self) -> &str {
+        "skill__delete"
+    }
     fn description(&self) -> &str {
         "Permanently delete a saved skill by name."
     }
@@ -176,7 +184,7 @@ impl<S: SkillStore + 'static> Tool for SkillDeleteTool<S> {
         &self,
         arguments: serde_json::Value,
         _resume: Option<ResumePayload>,
-        _ctx: &ToolContext,
+        _ctx: ChatCtx,
     ) -> Result<ToolResult<impl Stream<Item = ToolOutput>>, AgentError> {
         let name = arguments["name"]
             .as_str()

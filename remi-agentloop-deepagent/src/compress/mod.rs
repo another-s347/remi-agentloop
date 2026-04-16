@@ -14,14 +14,11 @@
 //!    `Message::user("[Summary: ...]")`.
 //! 3. Forward the now-shorter history to the inner agent.
 
-use async_stream::stream;
 use futures::{Stream, StreamExt};
 use remi_core::agent::Agent;
 use remi_core::error::AgentError;
 use remi_core::model::ChatModel;
-use remi_core::types::{
-    AgentEvent, ChatRequest, ChatResponseChunk, Content, LoopInput, Message, Role,
-};
+use remi_core::types::{ChatCtx, ChatResponseChunk, LoopInput, Message, ModelRequest, Role};
 
 use crate::events::DeepAgentEvent;
 
@@ -37,7 +34,7 @@ pub struct CompressingLayer<M> {
     /// The model used for summarisation (can be the same as the main model,
     /// or a cheaper/faster variant).
     pub model: M,
-    /// Model identifier sent in the summarisation `ChatRequest`.
+    /// Model identifier sent in the summarisation `ModelRequest`.
     pub model_name: String,
     /// Approximate character threshold — compression is triggered when the total
     /// chars in `history` exceed this value.
@@ -117,7 +114,7 @@ where
             .collect::<Vec<_>>()
             .join("\n\n");
 
-        let req = ChatRequest {
+        let req = ModelRequest {
             model: self.model_name.clone(),
             messages: vec![
                 Message::system(
@@ -139,7 +136,7 @@ where
             extra_body: serde_json::Map::new(),
         };
 
-        let stream = self.model.chat(req).await?;
+        let stream = self.model.chat(ChatCtx::default(), req).await?;
         let mut stream = std::pin::pin!(stream);
         let mut summary = String::new();
         while let Some(chunk) = stream.next().await {
@@ -171,39 +168,34 @@ where
 
     async fn chat(
         &self,
+        ctx: ChatCtx,
         input: LoopInput,
     ) -> Result<impl Stream<Item = DeepAgentEvent>, AgentError> {
         let input = match input {
             LoopInput::Start {
-                content,
+                message,
                 history,
                 extra_tools,
                 model,
                 temperature,
                 max_tokens,
                 metadata,
-                message_metadata,
-                user_name,
-                user_state,
             } => {
                 let history = self.maybe_compress(history).await?;
                 LoopInput::Start {
-                    content,
+                    message,
                     history,
                     extra_tools,
                     model,
                     temperature,
                     max_tokens,
                     metadata,
-                    message_metadata,
-                    user_name,
-                    user_state,
                 }
             }
             other => other,
         };
 
-        let stream = self.inner.chat(input).await?;
+        let stream = self.inner.chat(ctx, input).await?;
         Ok(stream)
     }
 }

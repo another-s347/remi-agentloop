@@ -27,6 +27,7 @@ remi-core = { path = "../remi-agentloop-core", package = "remi-agentloop-core", 
 remi-transport = { path = "../remi-agentloop-transport", package = "remi-agentloop-transport" }
 remi-model = { path = "../remi-agentloop-model", package = "remi-agentloop-model" }
 remi-tool = { path = "../remi-agentloop-tool", package = "remi-agentloop-tool" }
+remi-eval = { path = "../remi-agentloop-eval", package = "remi-agentloop-eval" }
 remi-agentloop-macros = { path = "../remi-agentloop-macros" }
 
 futures = { workspace = true }

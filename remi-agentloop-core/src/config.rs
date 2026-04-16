@@ -1,15 +1,25 @@
+use crate::error::AgentError;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use crate::error::AgentError;
 use std::future::Future;
 use std::time::Duration;
 
 mod rate_limit_retry_defaults {
-    pub const fn max_retries() -> usize { 4 }
-    pub const fn initial_delay_ms() -> u64 { 500 }
-    pub const fn max_delay_ms() -> u64 { 8_000 }
-    pub const fn multiplier() -> f64 { 2.0 }
-    pub const fn respect_retry_after() -> bool { true }
+    pub const fn max_retries() -> usize {
+        4
+    }
+    pub const fn initial_delay_ms() -> u64 {
+        500
+    }
+    pub const fn max_delay_ms() -> u64 {
+        8_000
+    }
+    pub const fn multiplier() -> f64 {
+        2.0
+    }
+    pub const fn respect_retry_after() -> bool {
+        true
+    }
 }
 
 /// Backoff policy for retrying model calls that fail with HTTP 429.
@@ -155,34 +165,45 @@ pub struct AgentConfig {
 }
 
 impl AgentConfig {
-    pub fn new() -> Self { Self::default() }
+    pub fn new() -> Self {
+        Self::default()
+    }
 
     pub fn with_api_key(mut self, key: impl Into<String>) -> Self {
-        self.api_key = Some(key.into()); self
+        self.api_key = Some(key.into());
+        self
     }
     pub fn with_model(mut self, model: impl Into<String>) -> Self {
-        self.model = Some(model.into()); self
+        self.model = Some(model.into());
+        self
     }
     pub fn with_base_url(mut self, url: impl Into<String>) -> Self {
-        self.base_url = Some(url.into()); self
+        self.base_url = Some(url.into());
+        self
     }
     pub fn with_temperature(mut self, temp: f64) -> Self {
-        self.temperature = Some(temp); self
+        self.temperature = Some(temp);
+        self
     }
     pub fn with_max_tokens(mut self, n: u32) -> Self {
-        self.max_tokens = Some(n); self
+        self.max_tokens = Some(n);
+        self
     }
     pub fn with_header(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
-        self.headers.insert(key.into(), value.into()); self
+        self.headers.insert(key.into(), value.into());
+        self
     }
     pub fn with_timeout_ms(mut self, ms: u64) -> Self {
-        self.timeout_ms = Some(ms); self
+        self.timeout_ms = Some(ms);
+        self
     }
     pub fn with_rate_limit_retry(mut self, policy: RateLimitRetryPolicy) -> Self {
-        self.rate_limit_retry = Some(policy); self
+        self.rate_limit_retry = Some(policy);
+        self
     }
     pub fn with_extra(mut self, extra: serde_json::Value) -> Self {
-        self.extra = extra; self
+        self.extra = extra;
+        self
     }
 
     /// Load from REMI_* environment variables
@@ -192,9 +213,15 @@ impl AgentConfig {
             api_key: std::env::var("REMI_API_KEY").ok(),
             model: std::env::var("REMI_MODEL").ok(),
             base_url: std::env::var("REMI_BASE_URL").ok(),
-            temperature: std::env::var("REMI_TEMPERATURE").ok().and_then(|s| s.parse().ok()),
-            max_tokens: std::env::var("REMI_MAX_TOKENS").ok().and_then(|s| s.parse().ok()),
-            timeout_ms: std::env::var("REMI_TIMEOUT_MS").ok().and_then(|s| s.parse().ok()),
+            temperature: std::env::var("REMI_TEMPERATURE")
+                .ok()
+                .and_then(|s| s.parse().ok()),
+            max_tokens: std::env::var("REMI_MAX_TOKENS")
+                .ok()
+                .and_then(|s| s.parse().ok()),
+            timeout_ms: std::env::var("REMI_TIMEOUT_MS")
+                .ok()
+                .and_then(|s| s.parse().ok()),
             rate_limit_retry: RateLimitRetryPolicy::from_env(),
             ..Default::default()
         }
@@ -202,15 +229,33 @@ impl AgentConfig {
 
     /// Merge: fields from `other` override `self` when Some
     pub fn merge(mut self, other: &AgentConfig) -> Self {
-        if other.api_key.is_some()    { self.api_key    = other.api_key.clone(); }
-        if other.model.is_some()      { self.model      = other.model.clone(); }
-        if other.base_url.is_some()   { self.base_url   = other.base_url.clone(); }
-        if other.temperature.is_some(){ self.temperature = other.temperature; }
-        if other.max_tokens.is_some() { self.max_tokens  = other.max_tokens; }
-        if other.timeout_ms.is_some() { self.timeout_ms  = other.timeout_ms; }
-        if other.rate_limit_retry.is_some() { self.rate_limit_retry = other.rate_limit_retry.clone(); }
-        for (k, v) in &other.headers  { self.headers.insert(k.clone(), v.clone()); }
-        if !other.extra.is_null()     { self.extra = other.extra.clone(); }
+        if other.api_key.is_some() {
+            self.api_key = other.api_key.clone();
+        }
+        if other.model.is_some() {
+            self.model = other.model.clone();
+        }
+        if other.base_url.is_some() {
+            self.base_url = other.base_url.clone();
+        }
+        if other.temperature.is_some() {
+            self.temperature = other.temperature;
+        }
+        if other.max_tokens.is_some() {
+            self.max_tokens = other.max_tokens;
+        }
+        if other.timeout_ms.is_some() {
+            self.timeout_ms = other.timeout_ms;
+        }
+        if other.rate_limit_retry.is_some() {
+            self.rate_limit_retry = other.rate_limit_retry.clone();
+        }
+        for (k, v) in &other.headers {
+            self.headers.insert(k.clone(), v.clone());
+        }
+        if !other.extra.is_null() {
+            self.extra = other.extra.clone();
+        }
         self
     }
 }

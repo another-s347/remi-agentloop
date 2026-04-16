@@ -82,7 +82,7 @@ async fn main() -> Result<(), AgentError> {
         ContentPart::image_url(&data_url),
     ]));
 
-    let stream = agent.chat(input).await?;
+    let stream = agent.chat(ChatCtx::default(), input).await?;
     let mut stream = std::pin::pin!(stream);
 
     while let Some(event) = stream.next().await {

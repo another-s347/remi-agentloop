@@ -4,10 +4,11 @@
 
 ## 核心设计原则
 
-- **核心抽象**：`async chat(Request) -> Result<Stream<Response>, Error>`，全链路强类型，零用户可见类型擦除
+- **核心抽象**：`async chat(ctx, Request) -> Result<Stream<Response>, Error>`，全链路强类型，零用户可见类型擦除
 - **多模态输入**：Message content 支持纯文本 / 图片 URL / 图片 Base64 / 音频 / 文件，与 OpenAI multimodal API 对齐
 - **标识符体系**：ThreadId / RunId / MessageId，贯穿会话、执行、消息全生命周期
 - **上下文管理**：ContextStore trait 可插拔存储后端（内存 / Redis / SQLite / 远程 API）
+- **职责边界清晰**：`Request` 承载真正驱动 Agent 轨迹的用户输入（message、tool、resume payload 等）；`State` 仅供 tool/layer 维护内部可恢复运行状态；`ChatCtx` 用于串联 tracing / cancellation / metadata / parent-child 调用上下文
 - **组合式**：适配器（map_response / map_request / map_err / transform / layer）将底层 Agent 组合为新 Agent
 - **单线程循环，按需并发**：Agent loop 单线程驱动，仅内部需要时（如并行 tool call）并发，不要求 Send
 - **流式 Tool + 并行执行**：Tool 返回 `ToolResult<Stream<ToolOutput>>`（参考 `Result<T, E>` 设计）：`Output(stream)` 表示正常流式执行，`Interrupt(req)` 表示中断请求——同一次调用不可混合。多 tool 并行执行，支持进度报告和增量结果
@@ -23,6 +24,14 @@
 - **依赖**：futures 0.3 / async-stream / pin-project-lite / serde + serde_json / thiserror / reqwest(可选) / axum(可选) / wasmi(可选) / tokio(native) / wasm-bindgen-futures(wasm-guest)
 - **Feature flags**：`native`(默认) / `http-client` / `http-server` / `wasm-host` / `wasm-guest` / `tracing-langsmith` / `tool-bash` / `tool-fs` / `tool-fs-virtual` / `tools` / `tui`
 - **过程宏**：`#[tool]` 宏自动从函数签名生成 Tool impl，doc comment → description，类型 → JSON Schema
+
+## 概念分层
+
+- **Request**：面向调用方的输入面。谁在驱动下一步执行，就通过 Request 表达。多轮历史、额外 tool 定义、resume 结果都属于这里。
+- **State**：面向框架内部的运行态。它用于保存 loop、tool、layer 的内部进度，支持 checkpoint / resume，但它本身不应替代用户输入去决定下一步轨迹。
+- **ChatCtx**：贯穿整条调用链的上下文。它负责传播 tracing span、取消信号、共享 metadata、以及 tool/layer 需要沿调用链共享的状态。
+
+一句话说：Agent 的轨迹由 Request 驱动，State 负责内部延续，ChatCtx 负责全程串联。
 
 ## 模块结构
 
@@ -105,3 +114,6 @@ macros/                   # proc-macro crate (remi-agentloop-macros)
 | 14 | [Advanced Patterns](docs/14-advanced-patterns.md) | Task（独立 memory）、Sub-Agent（共享 memory）、会话分叉——可行性分析 + 实现方案 |
 | 15 | [Tool Macro & Builtins](docs/15-tool-macro-builtins.md) | #[tool] 过程宏、BashTool、FsTool、VirtualFsTool |
 | 16 | [TUI](docs/16-tui.md) | Claude Code 风格终端 UI：流式对话、Tool 可视化、Interrupt 审批、斜杠命令 |
+| 17 | [Benchmarking](docs/17-benchmarking.md) | native / wasm benchmark harness、指标定义、运行方式 |
+| 18 | [Current Changelog](docs/18-current-changelog.md) | 当前工作树的 API/设计变更汇总：ChatCtx、ToolLayer、Tracing、Subagent、Eval、WASM 同步 |
+| 19 | [Dynamic Agent](docs/19-dynamic-agent.md) | 基于 markdown 的动态 agent / subagent 系统实现方案：spec、catalog、tool factory、dispatcher |

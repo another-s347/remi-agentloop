@@ -230,6 +230,7 @@ fn rust_msg_to_wit(m: remi_agentloop::types::Message) -> wit::Message {
                 .collect()
         }),
         tool_call_id: m.tool_call_id,
+            name: m.name,
         reasoning_content: m.reasoning_content,
         metadata_json: m
             .metadata
@@ -306,39 +307,48 @@ fn rust_state_to_wit(s: remi_agentloop::state::AgentState) -> wit::AgentState {
 fn rust_loop_input_to_wit(input: LoopInput) -> wit::LoopInput {
     match input {
         LoopInput::Start {
-            content,
+            message,
             history,
             extra_tools,
             model,
             temperature,
             max_tokens,
             metadata,
-            message_metadata,
-            user_name: _,
-            user_state,
         } => wit::LoopInput::Start(wit::LoopInputStart {
-            content: rust_content_to_wit(content),
+            message: rust_msg_to_wit(message),
             history: history.into_iter().map(rust_msg_to_wit).collect(),
             extra_tools: extra_tools.into_iter().map(rust_tool_def_to_wit).collect(),
             model,
             temperature,
             max_tokens,
             metadata_json: metadata.map(|v| serde_json::to_string(&v).unwrap_or_default()),
-            user_state_json: user_state.map(|v| serde_json::to_string(&v).unwrap_or_default()),
-            message_metadata_json: message_metadata.map(|v| serde_json::to_string(&v).unwrap_or_default()),
         }),
-        LoopInput::Resume { state, results } => wit::LoopInput::Resume(wit::LoopInputResume {
+        LoopInput::Resume {
+            state,
+            pending_interrupts,
+            results,
+        } => wit::LoopInput::Resume(wit::LoopInputResume {
             state: rust_state_to_wit(state),
+            pending_interrupts: pending_interrupts
+                .into_iter()
+                .map(rust_interrupt_to_wit)
+                .collect(),
             results: results.into_iter().map(rust_outcome_to_wit).collect(),
         }),
-        // Cancel has no WIT counterpart; handled by run_guest before this call.
-        LoopInput::Cancel { .. } => {
-            unreachable!("Cancel must be intercepted before rust_loop_input_to_wit")
-        }
     }
 }
 
 // ── WIT → Rust (ProtocolEvent returned from guest) ──────────────────────────
+
+fn rust_interrupt_to_wit(i: remi_agentloop::types::InterruptInfo) -> wit::InterruptInfo {
+    wit::InterruptInfo {
+        interrupt_id: i.interrupt_id.0,
+        tool_call_id: i.tool_call_id,
+        tool_name: i.tool_name,
+        kind: i.kind,
+        data_json: serde_json::to_string(&i.data).unwrap_or_default(),
+    }
+}
 
 fn wit_interrupt_to_rust(i: wit::InterruptInfo) -> remi_agentloop::types::InterruptInfo {
     remi_agentloop::types::InterruptInfo {
@@ -813,13 +823,6 @@ impl WasmAgent {
 
     /// Instantiate the component and drive one full `chat` request.
     fn run_guest(&self, input: LoopInput) -> Result<Vec<ProtocolEvent>, ProtocolError> {
-        // Cancel is a host-side concept; the guest has no Cancel variant.
-        if let LoopInput::Cancel { .. } = &input {
-            return Err(ProtocolError {
-                code: "cancelled".into(),
-                message: "Agent run was cancelled before reaching the guest".into(),
-            });
-        }
         // Clone the config snapshot for this invocation.
         let config_snapshot = self.config_source.get_config();
 
@@ -890,6 +893,7 @@ impl Agent for WasmAgent {
 
     fn chat(
         &self,
+        _ctx: remi_core::types::ChatCtx,
         req: Self::Request,
     ) -> impl std::future::Future<
         Output = Result<impl futures::Stream<Item = Self::Response>, Self::Error>,

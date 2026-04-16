@@ -7,8 +7,8 @@ use futures::Stream;
 use tokio::sync::Mutex;
 
 use remi_core::error::AgentError;
-use remi_core::tool::{Tool, ToolContext, ToolOutput, ToolResult};
-use remi_core::types::ResumePayload;
+use remi_core::tool::{Tool, ToolOutput, ToolResult};
+use remi_core::types::{ChatCtx, ResumePayload};
 
 // ── LocalFsBackend ────────────────────────────────────────────────────────────
 
@@ -639,7 +639,7 @@ impl Tool for VirtualBashTool {
         &self,
         arguments: serde_json::Value,
         _resume: Option<ResumePayload>,
-        _ctx: &ToolContext,
+        _ctx: ChatCtx,
     ) -> impl std::future::Future<Output = Result<ToolResult<impl Stream<Item = ToolOutput>>, AgentError>>
     {
         let inner = self.inner.clone();

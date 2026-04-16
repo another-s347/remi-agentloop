@@ -17,7 +17,7 @@
 
 use std::collections::HashMap;
 use std::future::Future;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
 use async_stream::stream;
 use futures::{Stream, StreamExt};
@@ -90,6 +90,7 @@ where
 
     fn chat(
         &self,
+        ctx: ChatCtx,
         input: LoopInput,
     ) -> impl Future<Output = Result<impl Stream<Item = AgentEvent>, AgentError>> {
         async move {
@@ -102,6 +103,8 @@ where
                     temperature,
                     max_tokens,
                     metadata,
+                    message_metadata,
+                    user_name,
                 } => {
                     let user_state = serde_json::Value::Null;
                     extra_tools.extend(self.tools.definitions(&user_state));
@@ -113,10 +116,11 @@ where
                         temperature,
                         max_tokens,
                         metadata,
+                        message_metadata,
+                        user_name,
                     }
                 }
                 resume @ LoopInput::Resume { .. } => resume,
-                cancel @ LoopInput::Cancel { .. } => cancel,
             };
 
             let mut next_input = Some(first_input);
@@ -125,7 +129,7 @@ where
                 loop {
                     let input = next_input.take().unwrap();
 
-                    let inner_stream = match self.inner.chat(input).await {
+                    let inner_stream = match self.inner.chat(ctx.clone(), input).await {
                         Ok(s) => s,
                         Err(e) => {
                             yield AgentEvent::Error(e.into());
@@ -151,15 +155,12 @@ where
                                 let mut all_outcomes = completed_results;
                                 if !mine.is_empty() {
                                     let resume_map = HashMap::new();
-                                    let tool_ctx = ToolContext {
-                                        config: AgentConfig::default(),
-                                        thread_id: Some(state.thread_id.clone()),
+                                    let tool_ctx = ChatCtx::new(ChatCtxState {
+                                        thread_id: state.thread_id.clone(),
                                         run_id: state.run_id.clone(),
-                                        metadata: None,
-                                        user_state: Arc::new(RwLock::new(
-                                            state.user_state.clone(),
-                                        )),
-                                    };
+                                        user_state: state.user_state.clone(),
+                                        ..ChatCtxState::default()
+                                    });
 
                                     let results = self
                                         .tools

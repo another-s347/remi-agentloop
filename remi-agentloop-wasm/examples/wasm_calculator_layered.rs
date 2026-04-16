@@ -32,7 +32,7 @@ use futures::StreamExt;
 
 use remi_agentloop::agent::Agent;
 use remi_agentloop::protocol::{ProtocolError, ProtocolEvent};
-use remi_agentloop::types::{LoopInput, ToolCallOutcome};
+use remi_agentloop::types::{ChatCtx, LoopInput, ToolCallOutcome};
 use remi_agentloop_wasm::WasmAgent;
 
 // ── ToolInterceptLayer ────────────────────────────────────────────────────────
@@ -59,7 +59,12 @@ impl<A> ToolInterceptLayer<A> {
         label: &'static str,
         compute: fn(f64, f64) -> f64,
     ) -> Self {
-        Self { inner, tool_name, label, compute }
+        Self {
+            inner,
+            tool_name,
+            label,
+            compute,
+        }
     }
 }
 
@@ -73,6 +78,7 @@ where
 
     fn chat(
         &self,
+        ctx: ChatCtx,
         req: LoopInput,
     ) -> impl std::future::Future<
         Output = Result<impl futures::Stream<Item = ProtocolEvent>, ProtocolError>,
@@ -91,7 +97,7 @@ where
             let mut forwarded: Vec<ProtocolEvent> = Vec::new();
 
             loop {
-                let stream = self.inner.chat(current_input.clone()).await?;
+                let stream = self.inner.chat(ctx.clone(), current_input.clone()).await?;
                 let events: Vec<ProtocolEvent> = stream.collect().await;
 
                 let mut resume = None;
@@ -110,13 +116,7 @@ where
                                 let a = tc.arguments["a"].as_f64().unwrap_or(0.0);
                                 let b = tc.arguments["b"].as_f64().unwrap_or(0.0);
                                 let r = compute(a, b);
-                                println!(
-                                    "  [{label}] {}({}, {}) = {}",
-                                    tc.name,
-                                    a,
-                                    b,
-                                    fmt_num(r)
-                                );
+                                println!("  [{label}] {}({}, {}) = {}", tc.name, a, b, fmt_num(r));
                                 results.push(ToolCallOutcome::Result {
                                     tool_call_id: tc.id.clone(),
                                     tool_name: tc.name.clone(),
@@ -160,7 +160,7 @@ async fn run_app(
 
     let input = LoopInput::start(expr);
     let stream = agent
-        .chat(input)
+        .chat(ChatCtx::default(), input)
         .await
         .expect("app: chat() failed");
     let mut stream = std::pin::pin!(stream);
@@ -209,24 +209,18 @@ async fn main() {
     // Layer 1 — multiply interception
     //   Observes NeedToolExecution for "multiply", executes it, resumes.
     //   Passes through everything else (including "divide") unchanged.
-    let with_mul = ToolInterceptLayer::new(
-        wasm,
-        "multiply",
-        "MultiplyLayer",
-        |a, b| a * b,
-    );
+    let with_mul = ToolInterceptLayer::new(wasm, "multiply", "MultiplyLayer", |a, b| a * b);
 
     // Layer 2 — divide interception
     //   Observes NeedToolExecution for "divide", executes it, resumes.
     //   At this point no more NeedToolExecution should appear upstream.
-    let with_div = ToolInterceptLayer::new(
-        with_mul,
-        "divide",
-        "DivideLayer",
-        |a, b| {
-            if b == 0.0 { f64::NAN } else { a / b }
-        },
-    );
+    let with_div = ToolInterceptLayer::new(with_mul, "divide", "DivideLayer", |a, b| {
+        if b == 0.0 {
+            f64::NAN
+        } else {
+            a / b
+        }
+    });
 
     // App — calls the fully-composed agent, sees only Delta / Done
     run_app(&with_div, &expr).await;

@@ -42,7 +42,9 @@ pub struct FileSkillStore {
 
 impl FileSkillStore {
     pub fn new(base_dir: impl Into<PathBuf>) -> Self {
-        Self { base_dir: base_dir.into() }
+        Self {
+            base_dir: base_dir.into(),
+        }
     }
 
     /// Canonical path: `<base_dir>/<name>/SKILL.md`
@@ -74,8 +76,7 @@ impl FileSkillStore {
                     let skill_md = path.join("SKILL.md");
                     if skill_md.is_file() {
                         if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                            let content = std::fs::read_to_string(&skill_md)
-                                .unwrap_or_default();
+                            let content = std::fs::read_to_string(&skill_md).unwrap_or_default();
                             let desc = parse_frontmatter_description(&content);
                             seen.insert(name.to_string());
                             result.push((name.to_string(), desc));
@@ -93,8 +94,7 @@ impl FileSkillStore {
                     if path.extension().and_then(|e| e.to_str()) == Some("md") {
                         if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
                             if !seen.contains(stem) {
-                                let content = std::fs::read_to_string(&path)
-                                    .unwrap_or_default();
+                                let content = std::fs::read_to_string(&path).unwrap_or_default();
                                 let desc = parse_frontmatter_description(&content);
                                 seen.insert(stem.to_string());
                                 result.push((stem.to_string(), desc));
@@ -125,7 +125,9 @@ pub fn parse_frontmatter_description(content: &str) -> Option<String> {
         let line = line.trim();
         if let Some(val) = line.strip_prefix("description:") {
             let v = val.trim().trim_matches('"').trim_matches('\'').to_string();
-            if !v.is_empty() { return Some(v); }
+            if !v.is_empty() {
+                return Some(v);
+            }
         }
     }
     None
@@ -220,7 +222,6 @@ impl SkillStore for FileSkillStore {
     }
 }
 
-
 // ── InMemorySkillStore ────────────────────────────────────────────────────────
 
 /// In-memory skill store — useful for tests and WASM targets.
@@ -230,12 +231,17 @@ pub struct InMemorySkillStore {
 }
 
 impl InMemorySkillStore {
-    pub fn new() -> Self { Self::default() }
+    pub fn new() -> Self {
+        Self::default()
+    }
 }
 
 impl SkillStore for InMemorySkillStore {
     async fn save(&self, name: &str, content: &str) -> Result<String, AgentError> {
-        self.map.lock().unwrap().insert(name.to_string(), content.to_string());
+        self.map
+            .lock()
+            .unwrap()
+            .insert(name.to_string(), content.to_string());
         Ok(format!("memory:{name}"))
     }
 
@@ -278,7 +284,10 @@ impl FsSkillStore {
     /// let store = FsSkillStore::new(Arc::new(mem), "/skills");
     /// ```
     pub fn new(fs: Arc<dyn bashkit::FileSystem>, base_path: impl Into<String>) -> Self {
-        Self { fs, base_path: base_path.into() }
+        Self {
+            fs,
+            base_path: base_path.into(),
+        }
     }
 
     fn path_for(&self, name: &str) -> std::path::PathBuf {
@@ -330,7 +339,8 @@ impl SkillStore for FsSkillStore {
                     .into_iter()
                     .filter_map(|entry| {
                         let n = &entry.name;
-                        n.ends_with(".md").then(|| n.trim_end_matches(".md").to_string())
+                        n.ends_with(".md")
+                            .then(|| n.trim_end_matches(".md").to_string())
                     })
                     .collect();
                 names.sort();

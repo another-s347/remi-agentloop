@@ -11,8 +11,8 @@ use futures::Stream;
 use std::path::{Path, PathBuf};
 
 use remi_core::error::AgentError;
-use remi_core::tool::{Tool, ToolContext, ToolOutput, ToolResult};
-use remi_core::types::ResumePayload;
+use remi_core::tool::{Tool, ToolOutput, ToolResult};
+use remi_core::types::{ChatCtx, ResumePayload};
 
 // ── Common helper ─────────────────────────────────────────────────────────────
 
@@ -38,7 +38,9 @@ impl WorkspaceBashTool {
 }
 
 impl Tool for WorkspaceBashTool {
-    fn name(&self) -> &str { "bash" }
+    fn name(&self) -> &str {
+        "bash"
+    }
     fn description(&self) -> &str {
         "Execute a bash shell command. Working directory is the agent workspace. \
          Relative paths resolve under the workspace."
@@ -57,7 +59,7 @@ impl Tool for WorkspaceBashTool {
         &self,
         arguments: serde_json::Value,
         _resume: Option<ResumePayload>,
-        _ctx: &ToolContext,
+        _ctx: ChatCtx,
     ) -> impl std::future::Future<Output = Result<ToolResult<impl Stream<Item = ToolOutput>>, AgentError>>
     {
         let root = self.root.clone();
@@ -103,10 +105,14 @@ impl Tool for WorkspaceBashTool {
 
 // ── RootedFsReadTool ──────────────────────────────────────────────────────────
 
-pub struct RootedFsReadTool { pub root: PathBuf }
+pub struct RootedFsReadTool {
+    pub root: PathBuf,
+}
 
 impl Tool for RootedFsReadTool {
-    fn name(&self) -> &str { "fs_read" }
+    fn name(&self) -> &str {
+        "fs_read"
+    }
     fn description(&self) -> &str {
         "Read a file in the workspace. Supports chunked reading via `offset` and \
         `length` to avoid returning too much data at once. \n\
@@ -130,7 +136,7 @@ impl Tool for RootedFsReadTool {
         &self,
         arguments: serde_json::Value,
         _resume: Option<ResumePayload>,
-        _ctx: &ToolContext,
+        _ctx: ChatCtx,
     ) -> impl std::future::Future<Output = Result<ToolResult<impl Stream<Item = ToolOutput>>, AgentError>>
     {
         let root = self.root.clone();
@@ -172,10 +178,14 @@ impl Tool for RootedFsReadTool {
 
 // ── RootedFsWriteTool ─────────────────────────────────────────────────────────
 
-pub struct RootedFsWriteTool { pub root: PathBuf }
+pub struct RootedFsWriteTool {
+    pub root: PathBuf,
+}
 
 impl Tool for RootedFsWriteTool {
-    fn name(&self) -> &str { "fs_write" }
+    fn name(&self) -> &str {
+        "fs_write"
+    }
     fn description(&self) -> &str {
         "Write text to a file in the workspace. Path is relative to the workspace root. \
          Parent directories must exist."
@@ -194,7 +204,7 @@ impl Tool for RootedFsWriteTool {
         &self,
         arguments: serde_json::Value,
         _resume: Option<ResumePayload>,
-        _ctx: &ToolContext,
+        _ctx: ChatCtx,
     ) -> impl std::future::Future<Output = Result<ToolResult<impl Stream<Item = ToolOutput>>, AgentError>>
     {
         let root = self.root.clone();
@@ -225,10 +235,14 @@ impl Tool for RootedFsWriteTool {
 
 // ── RootedFsCreateTool ────────────────────────────────────────────────────────
 
-pub struct RootedFsCreateTool { pub root: PathBuf }
+pub struct RootedFsCreateTool {
+    pub root: PathBuf,
+}
 
 impl Tool for RootedFsCreateTool {
-    fn name(&self) -> &str { "fs_mkdir" }
+    fn name(&self) -> &str {
+        "fs_mkdir"
+    }
     fn description(&self) -> &str {
         "Create a directory in the workspace. Path is relative to the workspace root."
     }
@@ -246,7 +260,7 @@ impl Tool for RootedFsCreateTool {
         &self,
         arguments: serde_json::Value,
         _resume: Option<ResumePayload>,
-        _ctx: &ToolContext,
+        _ctx: ChatCtx,
     ) -> impl std::future::Future<Output = Result<ToolResult<impl Stream<Item = ToolOutput>>, AgentError>>
     {
         let root = self.root.clone();
@@ -274,10 +288,14 @@ impl Tool for RootedFsCreateTool {
 
 // ── RootedFsRemoveTool ────────────────────────────────────────────────────────
 
-pub struct RootedFsRemoveTool { pub root: PathBuf }
+pub struct RootedFsRemoveTool {
+    pub root: PathBuf,
+}
 
 impl Tool for RootedFsRemoveTool {
-    fn name(&self) -> &str { "fs_remove" }
+    fn name(&self) -> &str {
+        "fs_remove"
+    }
     fn description(&self) -> &str {
         "Remove a file or directory in the workspace. Path is relative to the workspace root."
     }
@@ -295,7 +313,7 @@ impl Tool for RootedFsRemoveTool {
         &self,
         arguments: serde_json::Value,
         _resume: Option<ResumePayload>,
-        _ctx: &ToolContext,
+        _ctx: ChatCtx,
     ) -> impl std::future::Future<Output = Result<ToolResult<impl Stream<Item = ToolOutput>>, AgentError>>
     {
         let root = self.root.clone();
@@ -326,10 +344,14 @@ impl Tool for RootedFsRemoveTool {
 
 // ── RootedFsLsTool ────────────────────────────────────────────────────────────
 
-pub struct RootedFsLsTool { pub root: PathBuf }
+pub struct RootedFsLsTool {
+    pub root: PathBuf,
+}
 
 impl Tool for RootedFsLsTool {
-    fn name(&self) -> &str { "fs_ls" }
+    fn name(&self) -> &str {
+        "fs_ls"
+    }
     fn description(&self) -> &str {
         "List directory contents in the workspace. \
          Path is relative to the workspace root. Use '.' or '' for root."
@@ -347,7 +369,7 @@ impl Tool for RootedFsLsTool {
         &self,
         arguments: serde_json::Value,
         _resume: Option<ResumePayload>,
-        _ctx: &ToolContext,
+        _ctx: ChatCtx,
     ) -> impl std::future::Future<Output = Result<ToolResult<impl Stream<Item = ToolOutput>>, AgentError>>
     {
         let root = self.root.clone();
@@ -400,11 +422,13 @@ impl Tool for RootedFsLsTool {
 
 /// Reads the persistent `memory.md` file from the workspace.
 pub struct MemoryReadTool {
-    pub path: PathBuf,  // full path to memory.md
+    pub path: PathBuf, // full path to memory.md
 }
 
 impl Tool for MemoryReadTool {
-    fn name(&self) -> &str { "memory_read" }
+    fn name(&self) -> &str {
+        "memory_read"
+    }
     fn description(&self) -> &str {
         "Read your persistent memory notes. Returns the full content of memory.md \
          which is preserved across sessions. Call this to recall information from \
@@ -417,7 +441,7 @@ impl Tool for MemoryReadTool {
         &self,
         _arguments: serde_json::Value,
         _resume: Option<ResumePayload>,
-        _ctx: &ToolContext,
+        _ctx: ChatCtx,
     ) -> impl std::future::Future<Output = Result<ToolResult<impl Stream<Item = ToolOutput>>, AgentError>>
     {
         let path = self.path.clone();
@@ -440,11 +464,13 @@ impl Tool for MemoryReadTool {
 
 /// Overwrites `memory.md` with new content, persisting it for future sessions.
 pub struct MemoryUpdateTool {
-    pub path: PathBuf,  // full path to memory.md
+    pub path: PathBuf, // full path to memory.md
 }
 
 impl Tool for MemoryUpdateTool {
-    fn name(&self) -> &str { "memory_update" }
+    fn name(&self) -> &str {
+        "memory_update"
+    }
     fn description(&self) -> &str {
         "Overwrite your persistent memory notes. Pass the FULL desired content of \
          memory.md — this replaces everything currently stored. \
@@ -468,7 +494,7 @@ impl Tool for MemoryUpdateTool {
         &self,
         arguments: serde_json::Value,
         _resume: Option<ResumePayload>,
-        _ctx: &ToolContext,
+        _ctx: ChatCtx,
     ) -> impl std::future::Future<Output = Result<ToolResult<impl Stream<Item = ToolOutput>>, AgentError>>
     {
         let path = self.path.clone();

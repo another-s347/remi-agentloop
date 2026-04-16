@@ -29,7 +29,7 @@
 //!     async fn chat(&self, input: LoopInput) -> Result<Vec<ProtocolEvent>, String> {
 //!         let cfg = get_config(); // pull runtime config from host
 //!         let text = match &input {
-//!             LoopInput::Start { content, .. } => content.text_content(),
+//!             LoopInput::Start { message, .. } => message.content.text_content(),
 //!             _ => return Err("Resume not supported".into()),
 //!         };
 //!         Ok(vec![
@@ -170,6 +170,7 @@ interface agent {
         content: content,
         tool-calls: option<list<tool-call-message>>,
         tool-call-id: option<string>,
+        name: option<string>,
         reasoning-content: option<string>,
         metadata-json: option<string>,
     }
@@ -224,18 +225,17 @@ interface agent {
         data-json: string,
     }
     record loop-input-start {
-        content: content,
+        message: message,
         history: list<message>,
         extra-tools: list<tool-definition>,
         model: option<string>,
         temperature: option<f64>,
         max-tokens: option<u32>,
         metadata-json: option<string>,
-        user-state-json: option<string>,
-        message-metadata-json: option<string>,
     }
     record loop-input-resume {
         state: agent-state,
+        pending-interrupts: list<interrupt-info>,
         results: list<tool-call-outcome>,
     }
     variant loop-input {
@@ -354,6 +354,7 @@ interface agent {
         content: content,
         tool-calls: option<list<tool-call-message>>,
         tool-call-id: option<string>,
+        name: option<string>,
         reasoning-content: option<string>,
         metadata-json: option<string>,
     }
@@ -408,18 +409,17 @@ interface agent {
         data-json: string,
     }
     record loop-input-start {
-        content: content,
+        message: message,
         history: list<message>,
         extra-tools: list<tool-definition>,
         model: option<string>,
         temperature: option<f64>,
         max-tokens: option<u32>,
         metadata-json: option<string>,
-        user-state-json: option<string>,
-        message-metadata-json: option<string>,
     }
     record loop-input-resume {
         state: agent-state,
+        pending-interrupts: list<interrupt-info>,
         results: list<tool-call-outcome>,
     }
     variant loop-input {
@@ -634,7 +634,7 @@ macro_rules! export_agent {
                         }).collect()
                     }),
                     tool_call_id: m.tool_call_id,
-                    name: None,
+                    name: m.name,
                     reasoning_content: m.reasoning_content,
                     metadata: m.metadata_json.and_then(|j| $crate::_serde_json::from_str(&j).ok()),
                 }
@@ -654,6 +654,7 @@ macro_rules! export_agent {
                         }).collect()
                     }),
                     tool_call_id: m.tool_call_id,
+                    name: m.name,
                     reasoning_content: m.reasoning_content,
                     metadata_json: m.metadata.map(|v| $crate::_serde_json::to_string(&v).unwrap_or_default()),
                 }
@@ -788,7 +789,7 @@ macro_rules! export_agent {
             pub fn wit_input_to_rust(input: wit::LoopInput) -> $crate::LoopInput {
                 match input {
                     wit::LoopInput::Start(s) => $crate::LoopInput::Start {
-                        content: wit_content_to_rust(s.content),
+                        message: wit_msg_to_rust(s.message),
                         history: s.history.into_iter().map(wit_msg_to_rust).collect(),
                         extra_tools: s.extra_tools.into_iter().map(wit_tool_def_to_rust).collect(),
                         model: s.model,
@@ -796,14 +797,10 @@ macro_rules! export_agent {
                         max_tokens: s.max_tokens,
                         metadata: s.metadata_json
                             .and_then(|j| $crate::_serde_json::from_str(&j).ok()),
-                        user_state: s.user_state_json
-                            .and_then(|j| $crate::_serde_json::from_str(&j).ok()),
-                        message_metadata: s.message_metadata_json
-                            .and_then(|j| $crate::_serde_json::from_str(&j).ok()),
-                        user_name: None,
                     },
                     wit::LoopInput::Resume(r) => $crate::LoopInput::Resume {
                         state: wit_state_to_rust(r.state),
+                        pending_interrupts: r.pending_interrupts.into_iter().map(wit_interrupt_to_rust).collect(),
                         results: r.results.into_iter().map(wit_outcome_to_rust).collect(),
                     },
                 }

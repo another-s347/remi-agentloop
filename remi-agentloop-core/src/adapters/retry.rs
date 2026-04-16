@@ -1,6 +1,7 @@
-use std::future::Future;
-use futures::Stream;
 use crate::agent::{Agent, Layer};
+use crate::types::ChatCtx;
+use futures::Stream;
+use std::future::Future;
 
 /// Retry layer — retries the Future (connection phase) on error
 pub struct RetryLayer {
@@ -8,7 +9,9 @@ pub struct RetryLayer {
 }
 
 impl RetryLayer {
-    pub fn new(max_retries: usize) -> Self { Self { max_retries } }
+    pub fn new(max_retries: usize) -> Self {
+        Self { max_retries }
+    }
 }
 
 pub struct RetryAgent<A> {
@@ -23,7 +26,10 @@ where
 {
     type Output = RetryAgent<A>;
     fn layer(self, inner: A) -> RetryAgent<A> {
-        RetryAgent { inner, max_retries: self.max_retries }
+        RetryAgent {
+            inner,
+            max_retries: self.max_retries,
+        }
     }
 }
 
@@ -36,12 +42,16 @@ where
     type Response = A::Response;
     type Error = A::Error;
 
-    fn chat(&self, req: Self::Request) -> impl Future<Output = Result<impl Stream<Item = Self::Response>, Self::Error>> {
+    fn chat(
+        &self,
+        ctx: ChatCtx,
+        req: Self::Request,
+    ) -> impl Future<Output = Result<impl Stream<Item = Self::Response>, Self::Error>> {
         let max = self.max_retries;
         async move {
             let mut last_err = None;
             for attempt in 0..=max {
-                match self.inner.chat(req.clone()).await {
+                match self.inner.chat(ctx.clone(), req.clone()).await {
                     Ok(stream) => return Ok(stream),
                     Err(e) => {
                         if attempt < max {

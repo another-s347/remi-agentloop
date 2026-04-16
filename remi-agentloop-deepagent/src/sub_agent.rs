@@ -1,8 +1,8 @@
 use async_stream::stream;
 use futures::{Future, Stream, StreamExt};
 use remi_core::prelude::{
-    AgentError, AgentEvent, ResumePayload, SubSessionEvent, SubSessionEventPayload, Tool,
-    ToolContext, ToolOutput, ToolResult,
+    AgentError, AgentEvent, ChatCtx, ResumePayload, SubSessionEvent, SubSessionEventPayload,
+    Tool, ToolOutput, ToolResult,
 };
 use serde_json::Value as JsonValue;
 use std::pin::Pin;
@@ -11,7 +11,7 @@ use std::sync::Arc;
 pub type SubAgentEventStream = Pin<Box<dyn Stream<Item = AgentEvent>>>;
 
 type TitleFn = dyn Fn(&JsonValue) -> Option<String> + Send + Sync;
-type RunnerFn = dyn Fn(JsonValue, ToolContext) -> Pin<Box<dyn Future<Output = Result<SubAgentEventStream, AgentError>>>>
+type RunnerFn = dyn Fn(JsonValue, ChatCtx) -> Pin<Box<dyn Future<Output = Result<SubAgentEventStream, AgentError>>>>
     + Send
     + Sync;
 
@@ -35,7 +35,7 @@ impl SubAgentToolAdapter {
         parameters_schema: JsonValue,
         agent_name: impl Into<String>,
         title_from_args: impl Fn(&JsonValue) -> Option<String> + Send + Sync + 'static,
-        runner: impl Fn(JsonValue, ToolContext) -> Pin<Box<dyn Future<Output = Result<SubAgentEventStream, AgentError>>>>
+        runner: impl Fn(JsonValue, ChatCtx) -> Pin<Box<dyn Future<Output = Result<SubAgentEventStream, AgentError>>>>
             + Send
             + Sync
             + 'static,
@@ -68,15 +68,15 @@ impl Tool for SubAgentToolAdapter {
         &self,
         arguments: JsonValue,
         _resume: Option<ResumePayload>,
-        ctx: &ToolContext,
+        ctx: ChatCtx,
     ) -> Result<ToolResult<impl Stream<Item = ToolOutput>>, AgentError> {
         let runner = Arc::clone(&self.runner);
         let agent_name = self.agent_name.clone();
         let title = (self.title_from_args)(&arguments);
-        let tool_ctx = ctx.clone();
+        let tool_ctx = ctx.fork();
 
         Ok(ToolResult::Output(stream! {
-            let inner_stream = match (runner)(arguments, tool_ctx).await {
+            let inner_stream: SubAgentEventStream = match (runner)(arguments, tool_ctx).await {
                 Ok(stream) => stream,
                 Err(error) => {
                     yield ToolOutput::text(format!("Sub-agent failed to start: {error}"));
@@ -271,7 +271,8 @@ impl Tool for SubAgentToolAdapter {
                     | AgentEvent::Checkpoint(_)
                     | AgentEvent::NeedToolExecution { .. }
                     | AgentEvent::Usage { .. }
-                    | AgentEvent::SubSession(_) => {}
+                    | AgentEvent::SubSession(_)
+                    | AgentEvent::Custom { .. } => {}
                 }
             }
 
@@ -284,9 +285,8 @@ impl Tool for SubAgentToolAdapter {
 mod tests {
     use super::*;
     use futures::stream;
-    use remi_core::prelude::{AgentConfig, RunId, ThreadId};
+    use remi_core::prelude::{RunId, ThreadId};
     use serde_json::json;
-    use std::sync::{Arc, RwLock};
 
     #[tokio::test]
     async fn adapter_streams_sub_session_but_returns_only_final_result() {
@@ -319,16 +319,14 @@ mod tests {
             },
         );
 
-        let ctx = ToolContext {
-            config: AgentConfig::default(),
-            thread_id: Some(ThreadId("parent-thread".into())),
-            run_id: RunId("parent-run".into()),
-            metadata: None,
-            user_state: Arc::new(RwLock::new(JsonValue::Null)),
-        };
+        let ctx = ChatCtx::with_ids(
+            ThreadId("parent-thread".into()),
+            RunId("parent-run".into()),
+            Default::default(),
+        );
 
         let result = tool
-            .execute(json!({ "query": "what is 6*7" }), None, &ctx)
+            .execute(json!({ "query": "what is 6*7" }), None, ctx)
             .await
             .expect("tool executes");
 

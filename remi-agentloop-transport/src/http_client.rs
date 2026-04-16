@@ -2,11 +2,11 @@ use async_stream::stream;
 use futures::{Stream, StreamExt};
 use std::pin::Pin;
 
-use remi_core::agent::Agent;
-use remi_core::protocol::{ProtocolEvent, ProtocolError};
-use remi_core::types::LoopInput;
 use crate::http::HttpTransport;
 use crate::sse::decode_sse_data;
+use remi_core::agent::Agent;
+use remi_core::protocol::{ProtocolError, ProtocolEvent};
+use remi_core::types::{ChatCtx, LoopInput};
 
 /// HTTP SSE client — connects to a remote Agent service exposing the
 /// standard remi protocol over Server-Sent Events.
@@ -92,6 +92,7 @@ impl<T: HttpTransport> Agent for HttpSseClient<T> {
 
     fn chat(
         &self,
+        ctx: ChatCtx,
         req: LoopInput,
     ) -> impl std::future::Future<Output = Result<impl Stream<Item = ProtocolEvent>, ProtocolError>>
     {
@@ -139,6 +140,9 @@ impl<T: HttpTransport> Agent for HttpSseClient<T> {
             Ok(stream! {
                 let mut lines: Pin<Box<_>> = lines;
                 while let Some(line) = lines.next().await {
+                    if ctx.is_cancelled() {
+                        break;
+                    }
                     if line.is_empty() || line.starts_with(':') {
                         continue;
                     }

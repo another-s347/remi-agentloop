@@ -1,6 +1,8 @@
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 use std::fmt;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, RwLock, Weak};
 use uuid::Uuid;
 
 fn uuid_v4() -> String {
@@ -36,6 +38,10 @@ pub struct MessageId(pub String);
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct InterruptId(pub String);
 
+/// Unique identifier for a tracing span node.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct SpanId(pub String);
+
 impl ThreadId {
     pub fn new() -> Self {
         Self(uuid_v4())
@@ -54,6 +60,18 @@ impl MessageId {
 impl InterruptId {
     pub fn new() -> Self {
         Self(uuid_v4())
+    }
+}
+impl SpanId {
+    pub fn new() -> Self {
+        Self(uuid_v4())
+    }
+
+    pub fn derived(namespace: Option<&SpanId>, name: impl AsRef<str>) -> Self {
+        let ns = namespace
+            .and_then(|id| Uuid::parse_str(&id.0).ok())
+            .unwrap_or_else(Uuid::nil);
+        Self(Uuid::new_v5(&ns, name.as_ref().as_bytes()).to_string())
     }
 }
 
@@ -77,6 +95,11 @@ impl Default for InterruptId {
         Self::new()
     }
 }
+impl Default for SpanId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl fmt::Display for ThreadId {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
@@ -96,6 +119,474 @@ impl fmt::Display for MessageId {
 impl fmt::Display for InterruptId {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.write_str(&self.0)
+    }
+}
+impl fmt::Display for SpanId {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+// ── Chat Context ────────────────────────────────────────────────────────────
+
+/// Kind of tracing span represented by a [`SpanNode`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum SpanKind {
+    Run,
+    Model,
+    Tool,
+    Subagent,
+    Custom { name: String },
+}
+
+impl SpanKind {
+    pub fn stable_name(&self) -> String {
+        match self {
+            SpanKind::Run => "run".to_string(),
+            SpanKind::Model => "model".to_string(),
+            SpanKind::Tool => "tool".to_string(),
+            SpanKind::Subagent => "subagent".to_string(),
+            SpanKind::Custom { name } => format!("custom:{name}"),
+        }
+    }
+}
+
+/// Parent-linked tracing node.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SpanNode {
+    pub span_id: SpanId,
+    pub kind: SpanKind,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scope_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent: Option<Box<SpanNode>>,
+}
+
+impl SpanNode {
+    pub fn new(kind: SpanKind) -> Self {
+        Self {
+            span_id: SpanId::new(),
+            kind,
+            scope_key: None,
+            parent: None,
+        }
+    }
+
+    pub fn derived(
+        kind: SpanKind,
+        scope_key: impl Into<String>,
+        parent: Option<&SpanNode>,
+    ) -> Self {
+        let scope_key = scope_key.into();
+        let stable_name = format!("{}:{scope_key}", kind.stable_name());
+        Self {
+            span_id: SpanId::derived(parent.map(|node| &node.span_id), stable_name),
+            kind,
+            scope_key: Some(scope_key),
+            parent: parent.cloned().map(Box::new),
+        }
+    }
+
+    pub fn with_scope_key(mut self, scope_key: impl Into<String>) -> Self {
+        self.scope_key = Some(scope_key.into());
+        self
+    }
+
+    pub fn child(&self, kind: SpanKind) -> Self {
+        Self {
+            span_id: SpanId::new(),
+            kind,
+            scope_key: None,
+            parent: Some(Box::new(self.clone())),
+        }
+    }
+
+    pub fn derived_child(&self, kind: SpanKind, scope_key: impl Into<String>) -> Self {
+        Self::derived(kind, scope_key, Some(self))
+    }
+}
+
+/// One frame in the owning tool-call chain for nested routing and tracing.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ToolCallFrame {
+    pub tool_call_id: String,
+    pub tool_name: String,
+}
+
+/// Serializable route used to resume an interrupt back into the correct nested owner.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ResumeRoute {
+    pub interrupt_id: InterruptId,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub call_chain: Vec<ToolCallFrame>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target_run_id: Option<RunId>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target_thread_id: Option<ThreadId>,
+}
+
+impl ResumeRoute {
+    pub fn new(interrupt_id: InterruptId) -> Self {
+        Self {
+            interrupt_id,
+            call_chain: Vec::new(),
+            target_run_id: None,
+            target_thread_id: None,
+        }
+    }
+
+    pub fn push_frame(
+        mut self,
+        tool_call_id: impl Into<String>,
+        tool_name: impl Into<String>,
+    ) -> Self {
+        self.call_chain.push(ToolCallFrame {
+            tool_call_id: tool_call_id.into(),
+            tool_name: tool_name.into(),
+        });
+        self
+    }
+}
+
+/// Mutable serializable portion of the chat context.
+///
+/// This is intentionally **not** the agent trajectory itself. Conversation
+/// messages, externally supplied tools, and resume inputs belong to the
+/// request surface. `ChatCtxState` is reserved for cross-cutting context that
+/// must flow through nested tools/layers/subagents, such as tracing lineage,
+/// cancellation-adjacent metadata, and tool-managed shared user state.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChatCtxState {
+    #[serde(default)]
+    pub user_state: Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<Value>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub active_tool_chain: Vec<ToolCallFrame>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub span: Option<SpanNode>,
+}
+
+impl Default for ChatCtxState {
+    fn default() -> Self {
+        Self {
+            user_state: Value::Null,
+            metadata: None,
+            active_tool_chain: Vec::new(),
+            span: None,
+        }
+    }
+}
+
+impl ChatCtxState {
+    pub fn with_user_state(mut self, user_state: Value) -> Self {
+        self.user_state = user_state;
+        self
+    }
+
+    pub fn child_span(&mut self, kind: SpanKind, scope_key: impl Into<String>) -> SpanNode {
+        let scope_key = scope_key.into();
+        let next = match &self.span {
+            Some(span) => span.child(kind),
+            None => SpanNode::new(kind),
+        }
+        .with_scope_key(scope_key);
+        self.span = Some(next.clone());
+        next
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct ChatCtxSnapshot {
+    pub thread_id: ThreadId,
+    pub run_id: RunId,
+    #[serde(flatten)]
+    pub state: ChatCtxState,
+}
+
+#[derive(Debug, Clone, Default)]
+struct ChatCtxOverlay {
+    active_tool_chain: Vec<ToolCallFrame>,
+    span: Option<SpanNode>,
+}
+
+#[derive(Debug)]
+struct CancellationInner {
+    cancelled: AtomicBool,
+    children: Mutex<Vec<Weak<CancellationInner>>>,
+}
+
+impl CancellationInner {
+    fn new() -> Self {
+        Self {
+            cancelled: AtomicBool::new(false),
+            children: Mutex::new(Vec::new()),
+        }
+    }
+}
+
+/// Runtime-only cancellation token with parent-child propagation.
+#[derive(Debug, Clone)]
+pub struct CancellationToken {
+    inner: Arc<CancellationInner>,
+}
+
+impl Default for CancellationToken {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl CancellationToken {
+    pub fn new() -> Self {
+        Self {
+            inner: Arc::new(CancellationInner::new()),
+        }
+    }
+
+    pub fn child_token(&self) -> Self {
+        let child = Self::new();
+        if self.is_cancelled() {
+            child.cancel();
+            return child;
+        }
+
+        self.inner
+            .children
+            .lock()
+            .unwrap()
+            .push(Arc::downgrade(&child.inner));
+        child
+    }
+
+    pub fn cancel(&self) {
+        if self.inner.cancelled.swap(true, Ordering::SeqCst) {
+            return;
+        }
+
+        let children = self.inner.children.lock().unwrap().clone();
+        for child in children {
+            if let Some(child) = child.upgrade() {
+                CancellationToken { inner: child }.cancel();
+            }
+        }
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.inner.cancelled.load(Ordering::SeqCst)
+    }
+}
+
+/// Runtime-only sidecar for [`ChatCtx`].
+#[derive(Debug, Clone, Default)]
+pub struct ChatRuntime {
+    cancellation: CancellationToken,
+}
+
+impl ChatRuntime {
+    pub fn new() -> Self {
+        Self {
+            cancellation: CancellationToken::new(),
+        }
+    }
+
+    pub fn cancellation(&self) -> CancellationToken {
+        self.cancellation.clone()
+    }
+
+    pub fn child(&self) -> Self {
+        Self {
+            cancellation: self.cancellation.child_token(),
+        }
+    }
+}
+
+/// Shared chat context handle with serializable state and runtime-only sidecar.
+///
+/// `ChatCtx` is the thread that ties a run together across nested calls. It is
+/// for tracing, cancellation, shared metadata, and tool/layer-owned mutable
+/// state, not for carrying the request payload that drives the next turn.
+#[derive(Debug, Clone)]
+pub struct ChatCtx {
+    thread_id: ThreadId,
+    run_id: RunId,
+    state: Arc<RwLock<ChatCtxState>>,
+    runtime: ChatRuntime,
+    overlay: ChatCtxOverlay,
+}
+
+impl Default for ChatCtx {
+    fn default() -> Self {
+        Self::new(ChatCtxState::default())
+    }
+}
+
+impl ChatCtx {
+    pub fn new(state: ChatCtxState) -> Self {
+        Self::with_ids(ThreadId::new(), RunId::new(), state)
+    }
+
+    pub fn with_ids(thread_id: ThreadId, run_id: RunId, state: ChatCtxState) -> Self {
+        Self {
+            thread_id,
+            run_id,
+            state: Arc::new(RwLock::new(state)),
+            runtime: ChatRuntime::new(),
+            overlay: ChatCtxOverlay::default(),
+        }
+    }
+
+    pub fn from_parts(
+        thread_id: ThreadId,
+        run_id: RunId,
+        state: ChatCtxState,
+        runtime: ChatRuntime,
+    ) -> Self {
+        Self::from_shared_parts(thread_id, run_id, Arc::new(RwLock::new(state)), runtime)
+    }
+
+    fn from_shared_parts(
+        thread_id: ThreadId,
+        run_id: RunId,
+        state: Arc<RwLock<ChatCtxState>>,
+        runtime: ChatRuntime,
+    ) -> Self {
+        Self {
+            thread_id,
+            run_id,
+            state,
+            runtime,
+            overlay: ChatCtxOverlay::default(),
+        }
+    }
+
+    pub(crate) fn snapshot(&self) -> ChatCtxSnapshot {
+        let mut state = self.state.read().unwrap().clone();
+        if !self.overlay.active_tool_chain.is_empty() {
+            state
+                .active_tool_chain
+                .extend(self.overlay.active_tool_chain.clone());
+        }
+        if self.overlay.span.is_some() {
+            state.span = self.overlay.span.clone();
+        }
+
+        ChatCtxSnapshot {
+            thread_id: self.thread_id.clone(),
+            run_id: self.run_id.clone(),
+            state,
+        }
+    }
+
+    pub fn update(&self, f: impl FnOnce(&mut ChatCtxState)) {
+        f(&mut self.state.write().unwrap());
+    }
+
+    pub fn runtime(&self) -> &ChatRuntime {
+        &self.runtime
+    }
+
+    pub fn user_state(&self) -> Value {
+        self.state.read().unwrap().user_state.clone()
+    }
+
+    pub fn with_user_state<T>(&self, f: impl FnOnce(&Value) -> T) -> T {
+        f(&self.state.read().unwrap().user_state)
+    }
+
+    pub fn update_user_state<T>(&self, f: impl FnOnce(&mut Value) -> T) -> T {
+        f(&mut self.state.write().unwrap().user_state)
+    }
+
+    pub fn set_user_state(&self, user_state: Value) {
+        self.update(|state| state.user_state = user_state);
+    }
+
+    pub fn thread_id(&self) -> ThreadId {
+        self.thread_id.clone()
+    }
+
+    pub fn run_id(&self) -> RunId {
+        self.run_id.clone()
+    }
+
+    pub fn metadata(&self) -> Option<Value> {
+        self.state.read().unwrap().metadata.clone()
+    }
+
+    pub fn cancel(&self) {
+        self.runtime.cancellation.cancel();
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.runtime.cancellation.is_cancelled()
+    }
+
+    pub fn child(&self) -> Self {
+        self.fork()
+    }
+
+    pub fn fork(&self) -> Self {
+        Self {
+            thread_id: self.thread_id.clone(),
+            run_id: self.run_id.clone(),
+            state: Arc::clone(&self.state),
+            runtime: self.runtime.child(),
+            overlay: self.overlay.clone(),
+        }
+    }
+
+    pub fn fork_for_tool(
+        &self,
+        tool_call_id: impl Into<String>,
+        tool_name: impl Into<String>,
+    ) -> Self {
+        let tool_call_id = tool_call_id.into();
+        let tool_name = tool_name.into();
+        let scope_key = format!("{tool_name}:{tool_call_id}");
+        let parent_span = self.snapshot().state.span;
+        let mut overlay = self.overlay.clone();
+
+        overlay.active_tool_chain.push(ToolCallFrame {
+            tool_call_id,
+            tool_name,
+        });
+        overlay.span = Some(match parent_span.as_ref() {
+            Some(span) => span.derived_child(SpanKind::Tool, scope_key),
+            None => SpanNode::derived(SpanKind::Tool, scope_key, None),
+        });
+
+        Self {
+            thread_id: self.thread_id.clone(),
+            run_id: self.run_id.clone(),
+            state: Arc::clone(&self.state),
+            runtime: self.runtime.child(),
+            overlay,
+        }
+    }
+}
+
+impl Serialize for ChatCtx {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        self.snapshot().serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for ChatCtx {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let snapshot = ChatCtxSnapshot::deserialize(deserializer)?;
+        Ok(ChatCtx::with_ids(
+            snapshot.thread_id,
+            snapshot.run_id,
+            snapshot.state,
+        ))
     }
 }
 
@@ -308,6 +799,19 @@ impl Message {
         }
     }
 
+    pub fn user_content(content: Content) -> Self {
+        Self {
+            id: MessageId::new(),
+            role: Role::User,
+            content,
+            tool_calls: None,
+            tool_call_id: None,
+            name: None,
+            reasoning_content: None,
+            metadata: None,
+        }
+    }
+
     pub fn system(text: impl Into<String>) -> Self {
         Self {
             id: MessageId::new(),
@@ -426,7 +930,7 @@ pub struct FunctionCall {
     pub arguments: String,
 }
 
-// ── ChatRequest / ChatResponseChunk ──────────────────────────────────────────
+// ── ModelRequest / ChatResponseChunk ─────────────────────────────────────────
 
 use crate::config::RateLimitRetryPolicy;
 use crate::tool::ToolDefinition;
@@ -437,7 +941,7 @@ pub struct StreamOptions {
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub struct ChatRequest {
+pub struct ModelRequest {
     pub model: String,
     pub messages: Vec<Message>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -489,6 +993,51 @@ pub enum ChatResponseChunk {
         total_tokens: u32,
     },
     Done,
+}
+
+// ── ChatRequest ──────────────────────────────────────────────────────────────
+
+/// New top-level chat request used with `chat(ctx, request)`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ChatRequest {
+    Start {
+        message: Message,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        history: Vec<Message>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        external_tools: Vec<crate::tool::ToolDefinition>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        model: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        temperature: Option<f64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        max_tokens: Option<u32>,
+        #[serde(default, skip_serializing_if = "serde_json::Map::is_empty")]
+        extra_body: serde_json::Map<String, Value>,
+    },
+    Resume {
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        payloads: Vec<ResumePayload>,
+    },
+}
+
+impl ChatRequest {
+    pub fn start(msg: impl Into<String>) -> Self {
+        Self::Start {
+            message: Message::user(msg),
+            history: vec![],
+            external_tools: vec![],
+            model: None,
+            temperature: None,
+            max_tokens: None,
+            extra_body: serde_json::Map::new(),
+        }
+    }
+
+    pub fn resume(payloads: Vec<ResumePayload>) -> Self {
+        Self::Resume { payloads }
+    }
 }
 
 // ── AgentEvent ────────────────────────────────────────────────────────────────
@@ -558,6 +1107,10 @@ pub enum AgentEvent {
     Usage {
         prompt_tokens: u32,
         completion_tokens: u32,
+    },
+    Custom {
+        event_type: String,
+        extra: serde_json::Value,
     },
     Done,
     /// The run was cancelled by the user.  A `Cancelled` checkpoint has been
@@ -803,6 +1356,13 @@ pub enum ToolCallOutcome {
 /// Unified input for `Agent::chat()` — used by `AgentLoop`, composable layers,
 /// and the protocol/transport layer.
 ///
+/// This is the caller-driven surface that advances the agent trajectory.
+/// Conversation history, externally visible tool definitions, and resume data
+/// all live here because they are part of the user's effective input.
+///
+/// Internal execution state is tracked separately in [`crate::state::AgentState`],
+/// while [`ChatCtx`] carries cross-cutting context through the full run.
+///
 /// Merges the previous `LoopInput` and `ProtocolRequest` into a single
 /// serialisable type that supports:
 /// - Starting a new turn with text or multimodal content
@@ -837,8 +1397,11 @@ pub enum LoopInput {
     /// Start a new conversation turn
     #[serde(rename = "start")]
     Start {
-        /// User message content — text or multimodal
-        content: Content,
+        /// The user message that starts this turn.
+        ///
+        /// Request-level message creation lives here so the request fully
+        /// describes the user input that drives the next trajectory step.
+        message: Message,
         /// Conversation history from prior turns
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         history: Vec<Message>,
@@ -857,83 +1420,71 @@ pub enum LoopInput {
         /// Request metadata
         #[serde(skip_serializing_if = "Option::is_none")]
         metadata: Option<serde_json::Value>,
-        /// Metadata to attach to the user message created from `content`.
-        /// Stored alongside the message in conversation history.
-        #[serde(skip_serializing_if = "Option::is_none")]
-        message_metadata: Option<Value>,
-        /// Optional user identifier attached to the user message as the `name` field.
-        ///
-        /// Useful in multi-user scenarios — the LLM sees `role: "user"` plus
-        /// `name: "<user_id>"` as separate fields in the request body.
-        #[serde(skip_serializing_if = "Option::is_none")]
-        user_name: Option<String>,
-        /// Initial user_state to inject (tool-managed per-thread state, e.g. todos)
-        #[serde(skip_serializing_if = "Option::is_none")]
-        user_state: Option<serde_json::Value>,
     },
-    /// Resume from a `NeedToolExecution` with completed tool results
+    /// Resume from a `NeedToolExecution` with completed tool results.
+    ///
+    /// `state` is the resumable internal runtime snapshot for the loop and its
+    /// layers. `pending_interrupts` and `results` are still request data because
+    /// they represent caller input that determines how execution continues.
     #[serde(rename = "resume")]
     Resume {
         state: crate::state::AgentState,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        pending_interrupts: Vec<InterruptInfo>,
         results: Vec<ToolCallOutcome>,
     },
-    /// Cancel an in-progress run.  Produces a `Cancelled` checkpoint so the
-    /// conversation can be resumed later.
-    ///
-    /// This is the **low-level** cancellation path used when you drive
-    /// [`AgentLoop`] directly and already hold the [`AgentState`].  If you
-    /// are using the high-level [`BuiltAgent`] / [`crate::BuiltAgent`] API,
-    /// use [`ChatInput::Cancel`] instead — it takes only a `run_id` and
-    /// accepts an optional [`ChatInput::Cancel::partial_response`] string to
-    /// persist text that was already streamed before the cancel arrived.
-    ///
-    /// [`AgentState`]: crate::state::AgentState
-    /// [`AgentLoop`]: crate::AgentLoop
-    #[serde(rename = "cancel")]
-    Cancel { state: crate::state::AgentState },
 }
 
 impl LoopInput {
     /// Create a `Start` input with a text message.
     pub fn start(msg: impl Into<String>) -> Self {
         Self::Start {
-            content: Content::text(msg),
+            message: Message::user(msg),
             history: vec![],
             extra_tools: vec![],
             model: None,
             temperature: None,
             max_tokens: None,
             metadata: None,
-            message_metadata: None,
-            user_name: None,
-            user_state: None,
         }
     }
 
     /// Create a `Start` input with multimodal content.
     pub fn start_content(content: Content) -> Self {
         Self::Start {
-            content,
+            message: Message::user_content(content),
             history: vec![],
             extra_tools: vec![],
             model: None,
             temperature: None,
             max_tokens: None,
             metadata: None,
-            message_metadata: None,
-            user_name: None,
-            user_state: None,
+        }
+    }
+
+    pub fn start_message(message: Message) -> Self {
+        Self::Start {
+            message,
+            history: vec![],
+            extra_tools: vec![],
+            model: None,
+            temperature: None,
+            max_tokens: None,
+            metadata: None,
         }
     }
 
     /// Create a `Resume` input from state + tool results.
-    pub fn resume(state: crate::state::AgentState, results: Vec<ToolCallOutcome>) -> Self {
-        Self::Resume { state, results }
-    }
-
-    /// Create a `Cancel` input to abort a running conversation.
-    pub fn cancel(state: crate::state::AgentState) -> Self {
-        Self::Cancel { state }
+    pub fn resume(
+        state: crate::state::AgentState,
+        pending_interrupts: Vec<InterruptInfo>,
+        results: Vec<ToolCallOutcome>,
+    ) -> Self {
+        Self::Resume {
+            state,
+            pending_interrupts,
+            results,
+        }
     }
 
     /// Builder: attach conversation history (only applies to `Start`).
@@ -984,34 +1535,24 @@ impl LoopInput {
         self
     }
 
-    /// Builder: set metadata on the user message created from `content` (only applies to `Start`).
+    /// Builder: set metadata on the start message (only applies to `Start`).
     pub fn message_metadata(mut self, v: serde_json::Value) -> Self {
-        if let Self::Start {
-            message_metadata, ..
-        } = &mut self
-        {
-            *message_metadata = Some(v);
+        if let Self::Start { message, .. } = &mut self {
+            message.metadata = Some(v);
         }
         self
     }
 
-    /// Builder: set the user identifier on the user message (only applies to `Start`).
+    /// Builder: set the user identifier on the start message (only applies to `Start`).
     ///
     /// Serialised as the `name` field in OpenAI-compatible request bodies.
     pub fn user_name(mut self, name: impl Into<String>) -> Self {
-        if let Self::Start { user_name, .. } = &mut self {
-            *user_name = Some(name.into());
+        if let Self::Start { message, .. } = &mut self {
+            message.name = Some(name.into());
         }
         self
     }
 
-    /// Builder: set initial user_state (only applies to `Start`).
-    pub fn user_state(mut self, v: serde_json::Value) -> Self {
-        if let Self::Start { user_state, .. } = &mut self {
-            *user_state = Some(v);
-        }
-        self
-    }
 }
 
 impl From<String> for LoopInput {
@@ -1050,12 +1591,8 @@ impl From<Content> for LoopInput {
 /// ```
 #[derive(Debug, Clone)]
 pub enum ChatInput {
-    /// A new user message (text or multimodal)
-    Message {
-        content: Content,
-        /// Optional user identifier — serialised as the `name` field in the request body.
-        user_name: Option<String>,
-    },
+    /// A new user message.
+    Message { message: Message },
     /// Resume a previously interrupted run
     Resume {
         run_id: RunId,
@@ -1066,75 +1603,37 @@ pub enum ChatInput {
         /// User-provided payloads resolving each interrupt
         payloads: Vec<ResumePayload>,
     },
-    /// Cancel an in-progress run.  Saves a `Cancelled` checkpoint and
-    /// yields [`AgentEvent::Cancelled`] so the conversation can be resumed
-    /// later via [`ChatInput::Resume`].
-    ///
-    /// # Partial streaming output
-    ///
-    /// When a user interrupts an active stream (e.g. by pressing a stop
-    /// button), the LLM may already have emitted several [`AgentEvent::TextDelta`]
-    /// events that have been displayed but not yet committed to a checkpoint.
-    /// Pass those accumulated deltas as `partial_response` so they are
-    /// persisted as an incomplete assistant message before the checkpoint is
-    /// saved.  The caller is responsible for accumulating the deltas:
-    ///
-    /// ```ignore
-    /// let mut partial = String::new();
-    ///
-    /// // Drive the active stream until the user signals cancellation.
-    /// loop {
-    ///     tokio::select! {
-    ///         Some(event) = stream.next() => {
-    ///             if let AgentEvent::TextDelta { delta, .. } = &event {
-    ///                 partial.push_str(delta);
-    ///             }
-    ///             render(event);
-    ///         }
-    ///         _ = cancel_signal.notified() => break,
-    ///     }
-    /// }
-    ///
-    /// // Send the accumulated text back so the framework persists it.
-    /// agent.chat(ChatInput::Cancel {
-    ///     run_id,
-    ///     partial_response: Some(partial).filter(|s| !s.is_empty()),
-    /// }).await;
-    /// ```
-    ///
-    /// After the cancel completes the thread's message list will contain the
-    /// partial assistant turn, so a future [`ChatInput::Resume`] gives the
-    /// model full context.
-    ///
-    /// > **WASM / single-threaded hosts**: `tokio::select!` is unavailable.
-    /// > Check a cancellation flag between `call_next()` iterations instead
-    /// > and pass the accumulated output the same way.
-    Cancel {
-        run_id: RunId,
-        /// Text already streamed in the current (incomplete) turn, if any.
-        /// See the [`ChatInput::Cancel`] doc-comment for the accumulation pattern.
-        #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
-        partial_response: Option<String>,
-    },
 }
 
 impl ChatInput {
     /// Create a plain text message input.
     pub fn text(msg: impl Into<String>) -> Self {
-        ChatInput::Message { content: Content::text(msg), user_name: None }
+        ChatInput::Message {
+            message: Message::user(msg),
+        }
     }
 
     /// Create a multimodal message input (text + images, audio, etc.).
     pub fn multimodal(parts: Vec<ContentPart>) -> Self {
-        ChatInput::Message { content: Content::parts(parts), user_name: None }
+        ChatInput::Message {
+            message: Message::user_multimodal(parts),
+        }
     }
 
     /// Attach a user identifier to a `Message` input.
     pub fn with_user_name(self, name: impl Into<String>) -> Self {
         match self {
-            ChatInput::Message { content, .. } => ChatInput::Message {
-                content,
-                user_name: Some(name.into()),
+            ChatInput::Message { message } => ChatInput::Message {
+                message: message.with_name(name),
+            },
+            other => other,
+        }
+    }
+
+    pub fn with_message_metadata(self, metadata: impl Into<Value>) -> Self {
+        match self {
+            ChatInput::Message { message } => ChatInput::Message {
+                message: message.with_metadata(metadata),
             },
             other => other,
         }
@@ -1143,12 +1642,62 @@ impl ChatInput {
 
 impl From<String> for ChatInput {
     fn from(s: String) -> Self {
-        ChatInput::Message { content: Content::text(s), user_name: None }
+        ChatInput::Message {
+            message: Message::user(s),
+        }
     }
 }
 
 impl From<&str> for ChatInput {
     fn from(s: &str) -> Self {
-        ChatInput::Message { content: Content::text(s), user_name: None }
+        ChatInput::Message {
+            message: Message::user(s),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn chat_ctx_serialization_drops_runtime_cancel_state() {
+        let ctx = ChatCtx::new(ChatCtxState::default().with_user_state(serde_json::json!({
+            "todos": ["one"]
+        })));
+        ctx.cancel();
+
+        let json = serde_json::to_value(&ctx).unwrap();
+        assert!(json.get("thread_id").is_some());
+        assert!(json.get("run_id").is_some());
+        assert_eq!(json.get("user_state").unwrap()["todos"][0], "one");
+        assert!(json.get("cancellation").is_none());
+
+        let restored: ChatCtx = serde_json::from_value(json).unwrap();
+        assert!(!restored.is_cancelled());
+        assert_eq!(restored.user_state()["todos"][0], "one");
+    }
+
+    #[test]
+    fn cancellation_token_propagates_to_children() {
+        let parent = CancellationToken::new();
+        let child = parent.child_token();
+
+        parent.cancel();
+
+        assert!(parent.is_cancelled());
+        assert!(child.is_cancelled());
+    }
+
+    #[test]
+    fn span_nodes_are_parent_linked() {
+        let root = SpanNode::new(SpanKind::Run).with_scope_key("run:root");
+        let child = root.child(SpanKind::Tool).with_scope_key("tool:search");
+
+        assert_eq!(child.parent.as_ref().unwrap().span_id, root.span_id);
+        assert_eq!(
+            child.parent.as_ref().unwrap().scope_key.as_deref(),
+            Some("run:root")
+        );
     }
 }

@@ -182,7 +182,7 @@ pub fn chat(input_json: &str) -> Result<EventStream, JsValue> {
     let agent = composable_calculator_agent::build_agent(oai);
 
     let event_stream = async_stream::stream! {
-        match agent.chat(input).await {
+        match agent.chat(ChatCtx::default(), input).await {
             Ok(inner) => {
                 futures::pin_mut!(inner);
                 while let Some(event) = inner.next().await {

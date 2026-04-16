@@ -16,9 +16,9 @@ use futures::StreamExt;
 use remi_core::error::AgentError;
 use remi_core::tool::registry::ToolRegistry;
 use remi_core::tool::{
-    BoxedToolResult, ToolContext, ToolDefinition, ToolDefinitionContext, ToolOutput,
+    BoxedToolResult, ToolDefinition, ToolDefinitionContext, ToolOutput,
 };
-use remi_core::types::{ParsedToolCall, ResumePayload};
+use remi_core::types::{ChatCtx, ParsedToolCall, ResumePayload};
 use std::collections::HashMap;
 use std::future::Future;
 use std::path::{Path, PathBuf};
@@ -84,12 +84,11 @@ impl<R: ToolRegistry> ToolRegistry for FileBackedRegistry<R> {
         &'a self,
         calls: &'a [ParsedToolCall],
         resume_map: &'a HashMap<String, ResumePayload>,
-        ctx: &'a ToolContext,
+        ctx: &'a ChatCtx,
     ) -> Pin<Box<dyn Future<Output = Vec<(String, Result<BoxedToolResult<'a>, AgentError>)>> + 'a>>
     {
         Box::pin(async move {
-            let inner_results =
-                self.inner.execute_parallel(calls, resume_map, ctx).await;
+            let inner_results = self.inner.execute_parallel(calls, resume_map, ctx).await;
 
             let mut out = Vec::with_capacity(inner_results.len());
 
@@ -102,11 +101,15 @@ impl<R: ToolRegistry> ToolRegistry for FileBackedRegistry<R> {
                     Ok(remi_core::tool::ToolResult::Output(mut stream)) => {
                         // Collect the full stream
                         let mut deltas: Vec<String> = Vec::new();
+                        let mut customs: Vec<(String, serde_json::Value)> = Vec::new();
                         let mut final_result: Option<String> = None;
                         while let Some(item) = stream.next().await {
                             match item {
                                 ToolOutput::Delta(d) => deltas.push(d),
                                 ToolOutput::SubSession(_) => {}
+                                ToolOutput::Custom { event_type, extra } => {
+                                    customs.push((event_type, extra));
+                                }
                                 ToolOutput::Result(c) => final_result = Some(c.text_content()),
                             }
                         }
@@ -122,7 +125,8 @@ impl<R: ToolRegistry> ToolRegistry for FileBackedRegistry<R> {
                                         let total = result_str.len();
                                         let chunk = self.threshold_bytes;
                                         // Show a workspace-relative path so fs_read can resolve it
-                                        let rel_path = self.workspace_root
+                                        let rel_path = self
+                                            .workspace_root
                                             .as_deref()
                                             .and_then(|root| fpath.strip_prefix(root).ok())
                                             .unwrap_or(&fpath);
@@ -147,9 +151,13 @@ impl<R: ToolRegistry> ToolRegistry for FileBackedRegistry<R> {
                         // Reconstruct a static stream
                         let new_result_str: String = new_result_str;
                         let deltas_owned: Vec<String> = deltas;
+                        let customs_owned: Vec<(String, serde_json::Value)> = customs;
                         let s = async_stream::stream! {
                             for d in deltas_owned {
                                 yield ToolOutput::Delta(d);
+                            }
+                            for (event_type, extra) in customs_owned {
+                                yield ToolOutput::Custom { event_type, extra };
                             }
                             yield ToolOutput::text(new_result_str);
                         };

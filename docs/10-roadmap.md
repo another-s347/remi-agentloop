@@ -7,7 +7,7 @@
 ### Phase 1：核心骨架
 1. `Cargo.toml` + feature flags
 2. `error.rs` — AgentError（含 ThreadNotFound, RunNotFound）
-3. `types.rs` — ThreadId, RunId, MessageId, Content, ContentPart, Message(多模态), Role, ChatRequest(含 metadata), ChatResponseChunk, AgentEvent(含 RunStart+metadata)
+3. `types.rs` — ThreadId, RunId, MessageId, Content, ContentPart, Message(多模态), Role, ModelRequest / ChatRequest / LoopInput, ChatResponseChunk, ChatCtx, AgentEvent
 4. `protocol.rs` — ProtocolRequest(含 thread_id, metadata), ProtocolEvent(含 RunStart+metadata), ProtocolError, ProtocolAgent
 5. `agent.rs` — Agent trait + AgentExt + Layer trait
 6. `context.rs` — ContextStore trait + InMemoryStore
@@ -18,11 +18,11 @@
 8. `model/openai.rs` — OpenAIClient + SSE 解析（多模态 content 支持）
 
 ### Phase 3：Tool 系统 + Agent Loop + Tracing
-9. `tool/mod.rs` + `tool/registry.rs` — Tool trait(流式返回 Stream<ToolOutput>, execute_with_context) + ToolContext(含 metadata) + ToolRegistry(并行执行)
+9. `tool/mod.rs` + `tool/registry.rs` — Tool trait(流式返回 Stream<ToolOutput>, `execute(arguments, resume, &ChatCtx)`) + typed schema helpers + ToolRegistry(并行执行)
 9a. `macros/` — `#[tool]` 过程宏（函数签名 → Tool impl，doc comment → description，类型 → JSON Schema）
 9b. `tool/bash.rs` — BashTool [tool-bash]（shell 执行，白/黑名单，超时，输出截断）
-9c. `tool/fs.rs` — FsTool [tool-fs]（物理文件系统读写，路径沙箱，只读/可写模式）
-9d. `tool/vfs.rs` — VirtualFsTool [tool-fs-virtual]（内存虚拟文件系统，WASM 兼容）
+9c. `tool/fs.rs` — LocalFs*Tool [tool-fs]（物理文件系统读写，按操作拆分为 read/write/mkdir/remove/ls）
+9d. `tool/vfs.rs` / `tool/bkfs.rs` — VirtualFs / Fs*Tool [tool-fs-virtual]（内存虚拟文件系统，WASM 兼容）
 10. `interrupt.rs` — InterruptHandler trait + InterruptRouter
 11. `tracing/mod.rs` — Tracer trait + DynTracer + CompositeTracer + trace event structs
 12. `tracing/stdout.rs` — StdoutTracer

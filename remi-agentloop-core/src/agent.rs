@@ -1,11 +1,25 @@
 use futures::Stream;
 
+use crate::types::ChatCtx;
+
 /// Core async-streaming agent trait — fully generic, no `Send` bound.
 ///
 /// An `Agent` is anything that accepts a `Request` and streams back a
 /// sequence of `Response` items.  The trait is deliberately minimal; richer
 /// behaviour (memory, tool execution, checkpointing) is layered on top via
 /// [`AgentExt`], [`Layer`], and [`AgentBuilder`](crate::builder::AgentBuilder).
+///
+/// Conceptually, the framework separates three responsibilities:
+///
+/// - `Request`: the user-driven input that advances the agent trajectory.
+///   It carries the actual conversation-driving payload such as messages,
+///   tool definitions, and resume data.
+/// - `State`: internal execution state maintained by tools or layers between
+///   steps. It is resumable, but it does not by itself define the next turn's
+///   trajectory; that still comes from the request.
+/// - [`ChatCtx`]: cross-cutting context that threads through the full call
+///   chain for tracing, cancellation, shared metadata, and parent/child
+///   propagation.
 ///
 /// The absence of `Send` bounds lets the same trait work on `wasm32` targets
 /// where JS-backed futures are `!Send`.
@@ -52,11 +66,16 @@ pub trait Agent {
 
     /// Start a conversation and return a streaming response.
     ///
+    /// `ctx` carries cross-cutting runtime context for the whole invocation.
+    /// `req` is the user- or caller-provided input that actually drives the
+    /// next agent transition.
+    ///
     /// The returned `Stream` is lazy — items are not produced until the caller
     /// polls the stream.  Implementations may yield any number of items
     /// (including zero) before the stream terminates.
     async fn chat(
         &self,
+        ctx: ChatCtx,
         req: Self::Request,
     ) -> Result<impl Stream<Item = Self::Response>, Self::Error>;
 }

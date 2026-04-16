@@ -1,7 +1,7 @@
 use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;
 use quote::quote;
-use syn::{parse_macro_input, FnArg, ItemFn, Pat, ReturnType, Type};
+use syn::{parse_macro_input, parse_quote, FnArg, ItemFn, Pat, ReturnType, Type};
 
 /// `#[tool]` proc-macro: generates a `Tool` impl from an async fn.
 ///
@@ -76,16 +76,9 @@ fn tool_impl(func: ItemFn) -> syn::Result<TokenStream2> {
     // Extract parameters — separating special params (ctx, resume) from tool args
     let extracted = extract_params_v2(&func.sig.inputs)?;
 
-    // Build JSON Schema properties (only for tool args, not ctx/resume)
-    let schema_props = build_schema_props(&extracted.tool_params);
-    let required_fields: Vec<&str> = extracted
-        .tool_params
-        .iter()
-        .map(|(name, _)| name.as_str())
-        .collect();
-
-    // Build argument extraction in execute()
-    let arg_extractions = build_arg_extractions(&extracted.tool_params);
+    let args_struct_ident = syn::Ident::new(&format!("{}Args", struct_name), func_name.span());
+    let args_struct_fields = build_args_struct_fields(&extracted.tool_params);
+    let args_bindings = build_arg_bindings(&extracted.tool_params);
 
     let vis = &func.vis;
     let block = &func.block;
@@ -97,8 +90,6 @@ fn tool_impl(func: ItemFn) -> syn::Result<TokenStream2> {
         ReturnType::Default => quote! { String },
         ReturnType::Type(_, t) => quote! { #t },
     };
-
-    let required_json = required_fields.iter().map(|s| quote! { #s });
 
     // Build bindings for special params that the user declared
     let ctx_binding = if extracted.has_ctx {
@@ -120,7 +111,9 @@ fn tool_impl(func: ItemFn) -> syn::Result<TokenStream2> {
                 async move {
                     #ctx_binding
                     #resume_binding
-                    #(#arg_extractions)*
+                    let __remi_args: #args_struct_ident =
+                        ::remi_agentloop::tool::parse_arguments(#func_name_str, arguments)?;
+                    #(#args_bindings)*
                     let result: #ret_type = { #block };
                     let result_str = result.to_string();
                     Ok(::remi_agentloop::tool::ToolResult::Output(
@@ -139,7 +132,9 @@ fn tool_impl(func: ItemFn) -> syn::Result<TokenStream2> {
                 async move {
                     #ctx_binding
                     #resume_binding
-                    #(#arg_extractions)*
+                    let __remi_args: #args_struct_ident =
+                        ::remi_agentloop::tool::parse_arguments(#func_name_str, arguments)?;
+                    #(#args_bindings)*
                     let result: #ret_type = { #block };
                     Ok(::remi_agentloop::tool::ToolResult::Output(
                         ::async_stream::stream! {
@@ -155,7 +150,9 @@ fn tool_impl(func: ItemFn) -> syn::Result<TokenStream2> {
                 async move {
                     #ctx_binding
                     #resume_binding
-                    #(#arg_extractions)*
+                    let __remi_args: #args_struct_ident =
+                        ::remi_agentloop::tool::parse_arguments(#func_name_str, arguments)?;
+                    #(#args_bindings)*
                     let result: #ret_type = { #block };
                     match result {
                         ::remi_agentloop::tool::ToolResult::Output(val) => {
@@ -182,7 +179,9 @@ fn tool_impl(func: ItemFn) -> syn::Result<TokenStream2> {
                 async move {
                     #ctx_binding
                     #resume_binding
-                    #(#arg_extractions)*
+                    let __remi_args: #args_struct_ident =
+                        ::remi_agentloop::tool::parse_arguments(#func_name_str, arguments)?;
+                    #(#args_bindings)*
                     let result = { #block };
                     Ok(result)
                 }
@@ -191,6 +190,13 @@ fn tool_impl(func: ItemFn) -> syn::Result<TokenStream2> {
     };
 
     Ok(quote! {
+        #[derive(::remi_agentloop::serde::Deserialize, ::remi_agentloop::schemars::JsonSchema)]
+        #[serde(crate = "::remi_agentloop::serde")]
+        #[schemars(crate = "::remi_agentloop::schemars")]
+        struct #args_struct_ident {
+            #(#args_struct_fields,)*
+        }
+
         #[derive(Debug, Clone)]
         #vis struct #struct_ident;
 
@@ -208,20 +214,14 @@ fn tool_impl(func: ItemFn) -> syn::Result<TokenStream2> {
             }
 
             fn parameters_schema(&self) -> ::serde_json::Value {
-                ::serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        #(#schema_props),*
-                    },
-                    "required": [#(#required_json),*]
-                })
+                ::remi_agentloop::tool::schema_for_type::<#args_struct_ident>()
             }
 
             fn execute(
                 &self,
                 arguments: ::serde_json::Value,
                 _resume: ::std::option::Option<::remi_agentloop::types::ResumePayload>,
-                _ctx: &::remi_agentloop::tool::ToolContext,
+                _ctx: ::remi_agentloop::types::ChatCtx,
             ) -> impl ::std::future::Future<
                 Output = ::std::result::Result<
                     ::remi_agentloop::tool::ToolResult<
@@ -257,20 +257,33 @@ fn extract_doc_comments(attrs: &[syn::Attribute]) -> String {
 /// Result of parameter extraction — separates special framework params from tool arguments.
 struct ExtractedParams {
     /// Normal tool arguments that become JSON Schema properties.
-    tool_params: Vec<(String, String)>,
-    /// Whether the user declared a `ctx` / `context` parameter (ToolContext).
+    tool_params: Vec<ParamInfo>,
+    /// Whether the user declared a `ctx` / `context` parameter (ChatCtx).
     has_ctx: bool,
     /// Whether the user declared a `resume` parameter (Option<ResumePayload>).
     has_resume: bool,
 }
 
-/// Check if a type looks like `ToolContext`, `&ToolContext`, etc.
+enum ParamBindingKind {
+    Owned,
+    BorrowedStr,
+}
+
+struct ParamInfo {
+    name: String,
+    arg_ty: Type,
+    schema_ty: Type,
+    binding_kind: ParamBindingKind,
+    description: Option<String>,
+}
+
+/// Check if a type looks like `ChatCtx`, `&ChatCtx`, etc.
 fn is_tool_context_type(ty: &Type) -> bool {
     let ts = quote! { #ty }.to_string().replace(" ", "");
-    ts == "ToolContext"
-        || ts == "&ToolContext"
-        || ts.ends_with("::ToolContext")
-        || ts.ends_with("::ToolContext")
+    ts == "ChatCtx"
+        || ts == "&ChatCtx"
+        || ts.ends_with("::ChatCtx")
+        || ts.ends_with("::ChatCtx")
 }
 
 /// Check if a type looks like `Option<ResumePayload>`, etc.
@@ -305,8 +318,25 @@ fn extract_params_v2(
                     continue;
                 }
 
-                let type_str = type_to_json_schema_type(pt.ty.as_ref());
-                tool_params.push((name, type_str));
+                let type_string = quote! { #pt.ty }.to_string().replace(" ", "");
+                let (schema_ty, binding_kind) = if type_string == "&str" {
+                    (parse_quote!(String), ParamBindingKind::BorrowedStr)
+                } else {
+                    ((*pt.ty).clone(), ParamBindingKind::Owned)
+                };
+
+                let description = extract_doc_comments(&pt.attrs);
+                tool_params.push(ParamInfo {
+                    name,
+                    arg_ty: (*pt.ty).clone(),
+                    schema_ty,
+                    binding_kind,
+                    description: if description.is_empty() {
+                        None
+                    } else {
+                        Some(description)
+                    },
+                });
             }
         }
     }
@@ -318,68 +348,40 @@ fn extract_params_v2(
     })
 }
 
-fn type_to_json_schema_type(ty: &Type) -> String {
-    let ts = quote! { #ty }.to_string();
-    let ts = ts.replace(" ", "");
-    match ts.as_str() {
-        "String" | "&str" => "string".to_string(),
-        "i64" | "i32" | "i16" | "i8" | "u64" | "u32" | "u16" | "u8" | "usize" | "isize" => {
-            "integer".to_string()
-        }
-        "f64" | "f32" => "number".to_string(),
-        "bool" => "boolean".to_string(),
-        _ => "string".to_string(),
-    }
-}
-
-fn build_schema_props(params: &[(String, String)]) -> Vec<TokenStream2> {
+fn build_args_struct_fields(params: &[ParamInfo]) -> Vec<TokenStream2> {
     params
         .iter()
-        .map(|(name, ty)| {
+        .map(|param| {
+            let field_ident = syn::Ident::new(&param.name, proc_macro2::Span::call_site());
+            let field_ty = &param.schema_ty;
+            let description_attr = param.description.as_ref().map(|description| {
+                quote! {
+                    #[schemars(description = #description)]
+                }
+            });
             quote! {
-                #name: { "type": #ty }
+                #description_attr
+                #field_ident: #field_ty
             }
         })
         .collect()
 }
 
-fn build_arg_extractions(params: &[(String, String)]) -> Vec<TokenStream2> {
+fn build_arg_bindings(params: &[ParamInfo]) -> Vec<TokenStream2> {
     params
         .iter()
-        .map(|(name, ty)| {
-            let ident = syn::Ident::new(name, proc_macro2::Span::call_site());
-            let extraction = match ty.as_str() {
-                "integer" => quote! {
-                    let #ident: i64 = arguments[#name].as_i64()
-                        .ok_or_else(|| ::remi_agentloop::error::AgentError::ToolExecution {
-                            tool_name: stringify!(#ident).to_string(),
-                            message: format!("missing or invalid integer argument: {}", #name),
-                        })?;
+        .map(|param| {
+            let ident = syn::Ident::new(&param.name, proc_macro2::Span::call_site());
+            let field_ty = &param.arg_ty;
+            match param.binding_kind {
+                ParamBindingKind::Owned => quote! {
+                    let #ident: #field_ty = __remi_args.#ident;
                 },
-                "number" => quote! {
-                    let #ident: f64 = arguments[#name].as_f64()
-                        .ok_or_else(|| ::remi_agentloop::error::AgentError::ToolExecution {
-                            tool_name: stringify!(#ident).to_string(),
-                            message: format!("missing or invalid number argument: {}", #name),
-                        })?;
+                ParamBindingKind::BorrowedStr => quote! {
+                    let #ident = __remi_args.#ident;
+                    let #ident: #field_ty = #ident.as_str();
                 },
-                "boolean" => quote! {
-                    let #ident: bool = arguments[#name].as_bool()
-                        .ok_or_else(|| ::remi_agentloop::error::AgentError::ToolExecution {
-                            tool_name: stringify!(#ident).to_string(),
-                            message: format!("missing or invalid boolean argument: {}", #name),
-                        })?;
-                },
-                _ => quote! {
-                    let #ident: String = arguments[#name].as_str()
-                        .ok_or_else(|| ::remi_agentloop::error::AgentError::ToolExecution {
-                            tool_name: stringify!(#ident).to_string(),
-                            message: format!("missing or invalid string argument: {}", #name),
-                        })?
-                        .to_string();
-                },
-            };
-            extraction
+            }
         })
         .collect()
 }

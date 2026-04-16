@@ -1,31 +1,44 @@
 use async_stream::stream;
 use futures::Stream;
 use remi_core::error::AgentError;
-use remi_core::tool::{Tool, ToolContext, ToolOutput, ToolResult};
-use remi_core::types::ResumePayload;
+use remi_core::tool::{parse_arguments, schema_for_type, Tool, ToolOutput, ToolResult};
+use remi_core::types::{ChatCtx, ResumePayload};
+use schemars::JsonSchema;
+use serde::Deserialize;
+
+#[allow(dead_code)]
+#[derive(Debug, Deserialize, JsonSchema)]
+struct BashArgs {
+    command: String,
+    timeout_ms: Option<i64>,
+}
 
 /// Executes shell commands (bash -c)
 pub struct BashTool;
 
 impl Tool for BashTool {
-    fn name(&self) -> &str { "bash" }
-    fn description(&self) -> &str { "Execute a bash shell command and return the output." }
+    fn name(&self) -> &str {
+        "bash"
+    }
+    fn description(&self) -> &str {
+        "Execute a bash shell command and return the output."
+    }
     fn parameters_schema(&self) -> serde_json::Value {
-        serde_json::json!({
-            "type": "object",
-            "properties": {
-                "command": { "type": "string", "description": "The shell command to execute" },
-                "timeout_ms": { "type": "integer", "description": "Optional timeout in milliseconds" }
-            },
-            "required": ["command"]
-        })
+        schema_for_type::<BashArgs>()
     }
 
-    fn execute(&self, arguments: serde_json::Value, _resume: Option<ResumePayload>, _ctx: &ToolContext) -> impl std::future::Future<Output = Result<ToolResult<impl Stream<Item = ToolOutput>>, AgentError>> {
+    fn execute(
+        &self,
+        arguments: serde_json::Value,
+        _resume: Option<ResumePayload>,
+        _ctx: ChatCtx,
+    ) -> impl std::future::Future<Output = Result<ToolResult<impl Stream<Item = ToolOutput>>, AgentError>>
+    {
         async move {
-            let command = arguments["command"].as_str()
-                .ok_or_else(|| AgentError::tool("bash", "missing 'command' argument"))?
-                .to_string();
+            let BashArgs {
+                command,
+                timeout_ms: _,
+            } = parse_arguments("bash", arguments)?;
 
             Ok(ToolResult::Output(stream! {
                 yield ToolOutput::Delta(format!("$ {}", command));

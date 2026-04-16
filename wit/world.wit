@@ -114,6 +114,7 @@ interface agent {
         content: content,
         tool-calls: option<list<tool-call-message>>,
         tool-call-id: option<string>,
+        name: option<string>,
         /// JSON-encoded chain-of-thought reasoning text (thinking models).
         reasoning-content: option<string>,
         /// JSON-encoded user-defined metadata blob.
@@ -192,7 +193,7 @@ interface agent {
     // ── LoopInput (what the host sends to the guest) ─────────────────────────
 
     record loop-input-start {
-        content: content,
+        message: message,
         history: list<message>,
         extra-tools: list<tool-definition>,
         model: option<string>,
@@ -200,14 +201,11 @@ interface agent {
         max-tokens: option<u32>,
         /// JSON-encoded metadata blob.
         metadata-json: option<string>,
-        /// JSON-encoded initial user_state to inject (tool-managed per-thread state).
-        user-state-json: option<string>,
-        /// JSON-encoded metadata to attach to the user message created from `content`.
-        message-metadata-json: option<string>,
     }
 
     record loop-input-resume {
         state: agent-state,
+        pending-interrupts: list<interrupt-info>,
         results: list<tool-call-outcome>,
     }
 

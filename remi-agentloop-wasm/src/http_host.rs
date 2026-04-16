@@ -349,6 +349,7 @@ impl Agent for WasmAgentWithHttp {
 
     fn chat(
         &self,
+        _ctx: remi_core::types::ChatCtx,
         req: Self::Request,
     ) -> impl std::future::Future<
         Output = Result<impl futures::Stream<Item = Self::Response>, Self::Error>,

@@ -543,7 +543,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .unwrap_or_default();
 
                 let display_result = if result.chars().count() > 200 {
-                    format!("{}…  [{} chars]", result.chars().take(200).collect::<String>(), result.len())
+                    format!(
+                        "{}…  [{} chars]",
+                        result.chars().take(200).collect::<String>(),
+                        result.len()
+                    )
                 } else {
                     result.clone()
                 };
@@ -615,6 +619,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             AgentEvent::NeedToolExecution { .. } => {}
             AgentEvent::Cancelled => {}
             AgentEvent::Checkpoint(_) => {}
+            AgentEvent::Custom { .. } => {}
         }
     }
 

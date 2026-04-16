@@ -14,11 +14,7 @@
 
 use futures::StreamExt;
 use remi_agentloop_deepagent::{
-    DeepAgentBuilder,
-    DeepAgentConfig,
-    DeepAgentEvent,
-    SkillEvent,
-    TodoEvent,
+    DeepAgentBuilder, DeepAgentConfig, DeepAgentEvent, SkillEvent, TodoEvent,
 };
 use remi_model::OpenAIClient;
 
@@ -34,16 +30,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // ── Config ───────────────────────────────────────────────────────────────
-    let cfg = DeepAgentConfig::load()
-        .map_err(|e| format!("Config error: {e}"))?;
+    let cfg = DeepAgentConfig::load().map_err(|e| format!("Config error: {e}"))?;
     cfg.require_api_key().map_err(|e| {
         eprintln!("{e}");
         std::process::exit(1);
     });
 
     // ── Model setup ──────────────────────────────────────────────────────────
-    let mut oai = OpenAIClient::new(cfg.model.api_key.clone())
-        .with_model(&cfg.model.model);
+    let mut oai = OpenAIClient::new(cfg.model.api_key.clone()).with_model(&cfg.model.model);
     if let Some(url) = &cfg.model.base_url {
         oai = oai.with_base_url(url.clone());
     }
@@ -55,7 +49,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let agent = cfg.apply_to_builder(DeepAgentBuilder::new(oai)).build();
 
     // ── Task ─────────────────────────────────────────────────────────────────
-    let task = args.iter().skip(1)
+    let task = args
+        .iter()
+        .skip(1)
         .filter(|a| !a.starts_with("--"))
         .cloned()
         .collect::<Vec<_>>()
@@ -89,7 +85,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         match &ev {
             // ── Agent events ──────────────────────────────────────────────────
             DeepAgentEvent::Agent(ae) => match ae {
-                remi_core::types::AgentEvent::RunStart { thread_id, run_id, .. } => {
+                remi_core::types::AgentEvent::RunStart {
+                    thread_id, run_id, ..
+                } => {
                     println!("\n[run start  thread={thread_id} run={run_id}]");
                 }
                 remi_core::types::AgentEvent::TurnStart { turn } => {
@@ -111,13 +109,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     println!(")");
                     // Don't print huge results (FileBackedRegistry already truncated them)
                     let preview = if result.chars().count() > 200 {
-                        format!("{}… [{} bytes]", result.chars().take(200).collect::<String>(), result.len())
+                        format!(
+                            "{}… [{} bytes]",
+                            result.chars().take(200).collect::<String>(),
+                            result.len()
+                        )
                     } else {
                         result.clone()
                     };
                     println!("  ◀ {name}: {preview}");
                 }
-                remi_core::types::AgentEvent::Usage { prompt_tokens, completion_tokens } => {
+                remi_core::types::AgentEvent::Usage {
+                    prompt_tokens,
+                    completion_tokens,
+                } => {
                     println!("\n[usage  prompt={prompt_tokens}  completion={completion_tokens}]");
                 }
                 remi_core::types::AgentEvent::Done => {

@@ -1,7 +1,8 @@
+use crate::agent::Agent;
+use crate::types::ChatCtx;
+use futures::Stream;
 use std::future::Future;
 use std::pin::Pin;
-use futures::Stream;
-use crate::agent::Agent;
 
 type BoxStream<'a, T> = Pin<Box<dyn Stream<Item = T> + 'a>>;
 
@@ -18,7 +19,9 @@ impl<Req, Resp, Err> BoxedAgent<Req, Resp, Err> {
         Resp: 'static,
         Err: 'static,
     {
-        Self { inner: Box::new(agent) }
+        Self {
+            inner: Box::new(agent),
+        }
     }
 }
 
@@ -27,8 +30,12 @@ impl<Req: 'static, Resp: 'static, Err: 'static> Agent for BoxedAgent<Req, Resp, 
     type Response = Resp;
     type Error = Err;
 
-    fn chat(&self, req: Req) -> impl Future<Output = Result<impl Stream<Item = Resp>, Err>> {
-        self.inner.chat_erased(req)
+    fn chat(
+        &self,
+        ctx: ChatCtx,
+        req: Req,
+    ) -> impl Future<Output = Result<impl Stream<Item = Resp>, Err>> {
+        self.inner.chat_erased(ctx, req)
     }
 }
 
@@ -41,6 +48,7 @@ trait ErasedAgent: Send + Sync {
 
     fn chat_erased(
         &self,
+        ctx: ChatCtx,
         req: Self::Req,
     ) -> Pin<Box<dyn Future<Output = Result<BoxStream<'static, Self::Resp>, Self::Err>>>>;
 }
@@ -54,12 +62,13 @@ where
     A::Response: 'static,
     A::Error: 'static,
 {
-    type Req  = A::Request;
+    type Req = A::Request;
     type Resp = A::Response;
-    type Err  = A::Error;
+    type Err = A::Error;
 
     fn chat_erased(
         &self,
+        _ctx: ChatCtx,
         _req: A::Request,
     ) -> Pin<Box<dyn Future<Output = Result<BoxStream<'static, A::Response>, A::Error>>>> {
         unimplemented!(

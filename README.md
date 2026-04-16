@@ -12,6 +12,16 @@ The whole framework is built on one trait: `Agent<Request, Response, Error>`. Ev
 
 `chat()` returns `impl Stream<Item = AgentEvent>`. Text deltas, tool call events, usage stats, interrupts, and checkpoints all flow through a single typed stream that the caller drives at their own pace. No `Send` bound — works in both native async runtimes and `wasm32`.
 
+### Clear boundary: request vs state vs ctx
+
+The framework separates three concepts on purpose.
+
+- `Request` is what drives the agent trajectory. It contains the user-facing input for the next transition, including messages, tool definitions, and resume payloads.
+- `State` is internal runtime state that tools and layers maintain across steps. It is resumable, but it is not the source of truth for what the user is asking next.
+- `ChatCtx` carries cross-cutting invocation context through the full chain: tracing lineage, cancellation, shared metadata, and tool/layer-owned shared state.
+
+That split keeps user intent, internal runtime bookkeeping, and full-run context from leaking into each other.
+
 ### Tools, external tool calling & interrupt/resume
 
 Tools are defined with a `#[tool]` proc-macro: the doc comment becomes the description and argument types map to JSON Schema automatically. Tools execute locally inside the agent loop by default.

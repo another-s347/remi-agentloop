@@ -8,10 +8,10 @@ use remi_agentloop_core::agent::Agent;
 use remi_agentloop_core::builder::AgentBuilder;
 use remi_agentloop_core::error::AgentError;
 use remi_agentloop_core::tool::{
-    FunctionDefinition, Tool, ToolContext, ToolDefinition, ToolOutput, ToolResult,
+    FunctionDefinition, Tool, ToolDefinition, ToolOutput, ToolResult,
 };
 use remi_agentloop_core::types::{
-    AgentEvent, ChatRequest, ChatResponseChunk, Content, LoopInput, ParsedToolCall, Role,
+    AgentEvent, ChatCtx, ChatResponseChunk, Content, LoopInput, ModelRequest, ParsedToolCall, Role,
     ToolCallOutcome,
 };
 use serde::Serialize;
@@ -225,7 +225,7 @@ impl Tool for InternalBenchmarkTool {
         &self,
         arguments: serde_json::Value,
         _resume: Option<remi_agentloop_core::types::ResumePayload>,
-        _ctx: &ToolContext,
+        _ctx: &ChatCtx,
     ) -> Result<ToolResult<impl Stream<Item = ToolOutput>>, AgentError> {
         let payload = arguments
             .get("payload")
@@ -250,12 +250,13 @@ impl Tool for InternalBenchmarkTool {
 }
 
 impl Agent for ThrottledMockModel {
-    type Request = ChatRequest;
+    type Request = ModelRequest;
     type Response = ChatResponseChunk;
     type Error = AgentError;
 
     async fn chat(
         &self,
+        _ctx: ChatCtx,
         _req: Self::Request,
     ) -> Result<impl Stream<Item = Self::Response>, Self::Error> {
         let turn_index = {
@@ -401,12 +402,14 @@ fn build_model_plan(spec: BenchmarkSpec) -> ModelPlan {
         .expect("benchmark requires at least one text chunk");
 
     let mut steps: Vec<PlanStep> = text_chunks.into_iter().map(PlanStep::TextChunk).collect();
-    steps.extend(
-        std::iter::repeat_n(PlanStep::ToolCall(ToolKind::Internal), spec.internal_tool_calls),
-    );
-    steps.extend(
-        std::iter::repeat_n(PlanStep::ToolCall(ToolKind::External), spec.external_tool_calls),
-    );
+    steps.extend(std::iter::repeat_n(
+        PlanStep::ToolCall(ToolKind::Internal),
+        spec.internal_tool_calls,
+    ));
+    steps.extend(std::iter::repeat_n(
+        PlanStep::ToolCall(ToolKind::External),
+        spec.external_tool_calls,
+    ));
 
     let mut rng = Lcg64::new(spec.seed);
     rng.shuffle(&mut steps);
@@ -478,8 +481,8 @@ fn build_model_plan(spec: BenchmarkSpec) -> ModelPlan {
         });
     }
 
-    let model_output_tokens = spec.total_tokens
-        + (internal_index + external_index) * spec.tool_argument_tokens;
+    let model_output_tokens =
+        spec.total_tokens + (internal_index + external_index) * spec.tool_argument_tokens;
 
     ModelPlan {
         turns,
@@ -569,21 +572,29 @@ fn aggregate_metrics(spec: BenchmarkSpec, rounds: &[RoundMetrics]) -> AggregateM
     let average_ttft_ms = if rounds.is_empty() {
         0.0
     } else {
-        rounds
-            .iter()
-            .filter_map(|round| round.ttft_ms)
-            .sum::<f64>()
-            / rounds_count
+        rounds.iter().filter_map(|round| round.ttft_ms).sum::<f64>() / rounds_count
     };
 
     AggregateMetrics {
         target_tps: spec.target_tps,
-        total_visible_tokens: rounds.last().map(|round| round.total_visible_tokens).unwrap_or(0),
-        model_output_tokens: rounds.last().map(|round| round.model_output_tokens).unwrap_or(0),
+        total_visible_tokens: rounds
+            .last()
+            .map(|round| round.total_visible_tokens)
+            .unwrap_or(0),
+        model_output_tokens: rounds
+            .last()
+            .map(|round| round.model_output_tokens)
+            .unwrap_or(0),
         chunk_tokens: spec.chunk_tokens,
         tool_argument_tokens: spec.tool_argument_tokens,
-        internal_tool_calls: rounds.last().map(|round| round.internal_tool_calls).unwrap_or(0),
-        external_tool_calls: rounds.last().map(|round| round.external_tool_calls).unwrap_or(0),
+        internal_tool_calls: rounds
+            .last()
+            .map(|round| round.internal_tool_calls)
+            .unwrap_or(0),
+        external_tool_calls: rounds
+            .last()
+            .map(|round| round.external_tool_calls)
+            .unwrap_or(0),
         rounds: rounds.len(),
         average_observed_tps: avg(|round| round.observed_tps),
         average_observed_model_tps: avg(|round| round.observed_model_tps),
@@ -626,7 +637,10 @@ async fn run_round(spec: BenchmarkSpec) -> RoundMetrics {
     let mut total_events = 0usize;
 
     loop {
-        let stream = agent.chat(next_input).await.expect("agent.chat failed");
+        let stream = agent
+            .chat(ChatCtx::default(), next_input)
+            .await
+            .expect("agent.chat failed");
         let mut stream = std::pin::pin!(stream);
         let mut resume_input = None;
         let mut done = false;
@@ -773,11 +787,16 @@ fn parse_args() -> Result<BenchmarkConfig, String> {
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--rates" => {
-                let value = args.next().ok_or_else(|| "missing value for --rates".to_string())?;
+                let value = args
+                    .next()
+                    .ok_or_else(|| "missing value for --rates".to_string())?;
                 let rates = value
                     .split(',')
                     .filter(|item| !item.is_empty())
-                    .map(|item| item.parse::<u32>().map_err(|_| format!("invalid rate: {item}")))
+                    .map(|item| {
+                        item.parse::<u32>()
+                            .map_err(|_| format!("invalid rate: {item}"))
+                    })
                     .collect::<Result<Vec<_>, _>>()?;
                 if rates.is_empty() {
                     return Err("--rates must contain at least one integer".into());
@@ -800,16 +819,20 @@ fn parse_args() -> Result<BenchmarkConfig, String> {
                 config.external_tool_calls = parse_usize_arg("--external-tool-calls", args.next())?;
             }
             "--internal-tool-probability" => {
-                config.internal_tool_probability = parse_probability_arg("--internal-tool-probability", args.next())?;
+                config.internal_tool_probability =
+                    parse_probability_arg("--internal-tool-probability", args.next())?;
             }
             "--external-tool-probability" => {
-                config.external_tool_probability = parse_probability_arg("--external-tool-probability", args.next())?;
+                config.external_tool_probability =
+                    parse_probability_arg("--external-tool-probability", args.next())?;
             }
             "--internal-tool-latency-ms" => {
-                config.internal_tool_latency_ms = parse_u64_arg("--internal-tool-latency-ms", args.next())?;
+                config.internal_tool_latency_ms =
+                    parse_u64_arg("--internal-tool-latency-ms", args.next())?;
             }
             "--external-tool-latency-ms" => {
-                config.external_tool_latency_ms = parse_u64_arg("--external-tool-latency-ms", args.next())?;
+                config.external_tool_latency_ms =
+                    parse_u64_arg("--external-tool-latency-ms", args.next())?;
             }
             "--warmup" => {
                 config.warmup_rounds = parse_usize_arg("--warmup", args.next())?;
@@ -838,13 +861,20 @@ fn parse_args() -> Result<BenchmarkConfig, String> {
     if config.total_tokens == 0 {
         return Err("--tokens must be greater than zero".into());
     }
-    if config.tool_argument_tokens == 0 && (config.internal_tool_calls + config.external_tool_calls) > 0 {
-        return Err("--tool-arg-tokens must be greater than zero when tool calls are enabled".into());
+    if config.tool_argument_tokens == 0
+        && (config.internal_tool_calls + config.external_tool_calls) > 0
+    {
+        return Err(
+            "--tool-arg-tokens must be greater than zero when tool calls are enabled".into(),
+        );
     }
     if config.tool_argument_tokens == 0
         && (config.internal_tool_probability > 0.0 || config.external_tool_probability > 0.0)
     {
-        return Err("--tool-arg-tokens must be greater than zero when probabilistic tool calls are enabled".into());
+        return Err(
+            "--tool-arg-tokens must be greater than zero when probabilistic tool calls are enabled"
+                .into(),
+        );
     }
     if config.measured_rounds == 0 {
         return Err("--rounds must be greater than zero".into());

@@ -52,7 +52,9 @@ async fn main() -> Result<(), AgentError> {
 
     let agent = AgentBuilder::new()
         .model(oai)
-        .system("You are a calculator assistant. Use the provided tools to compute results precisely.")
+        .system(
+            "You are a calculator assistant. Use the provided tools to compute results precisely.",
+        )
         .tool(Add::new())
         .tool(Multiply::new())
         .tool(Power::new())
@@ -63,7 +65,10 @@ async fn main() -> Result<(), AgentError> {
     println!("{}", "─".repeat(50));
 
     let stream = agent
-        .chat("What is (3 + 7) * 2^4? Show step-by-step.".into())
+        .chat(
+            ChatCtx::default(),
+            "What is (3 + 7) * 2^4? Show step-by-step.".into(),
+        )
         .await?;
     let mut stream = std::pin::pin!(stream);
 
@@ -85,7 +90,10 @@ async fn main() -> Result<(), AgentError> {
                     println!("\n--- turn {turn} ---");
                 }
             }
-            AgentEvent::Usage { prompt_tokens, completion_tokens } => {
+            AgentEvent::Usage {
+                prompt_tokens,
+                completion_tokens,
+            } => {
                 eprintln!("\n[tokens: prompt={prompt_tokens} completion={completion_tokens}]");
             }
             AgentEvent::Done => {

@@ -6,8 +6,7 @@
 // ── wasip2 templates ─────────────────────────────────────────────────────────
 
 fn toml_path(path: &str) -> String {
-    path
-        .strip_prefix(r"\\?\")
+    path.strip_prefix(r"\\?\")
         .unwrap_or(path)
         .replace('\\', "/")
 }

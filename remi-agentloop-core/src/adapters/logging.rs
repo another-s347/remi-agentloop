@@ -1,6 +1,7 @@
-use std::future::Future;
-use futures::{Stream, StreamExt};
 use crate::agent::{Agent, Layer};
+use crate::types::ChatCtx;
+use futures::{Stream, StreamExt};
+use std::future::Future;
 
 /// Logging layer — prints request/response events to stdout
 pub struct LoggingLayer;
@@ -31,10 +32,14 @@ where
     type Response = A::Response;
     type Error = A::Error;
 
-    fn chat(&self, req: Self::Request) -> impl Future<Output = Result<impl Stream<Item = Self::Response>, Self::Error>> {
+    fn chat(
+        &self,
+        ctx: ChatCtx,
+        req: Self::Request,
+    ) -> impl Future<Output = Result<impl Stream<Item = Self::Response>, Self::Error>> {
         eprintln!("[remi] → request: {:?}", req);
         async move {
-            let stream = self.inner.chat(req).await?;
+            let stream = self.inner.chat(ctx, req).await?;
             Ok(stream.inspect(|item| eprintln!("[remi] ← response: {:?}", item)))
         }
     }

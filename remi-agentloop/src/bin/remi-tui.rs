@@ -271,8 +271,18 @@ fn handle_agent_event(app: &mut AppState, event: AgentEvent) -> bool {
             app.status.clear();
             return true;
         }
-        AgentEvent::NewMessages(_) => {
-            // Internal event — ignored in TUI mode
+        AgentEvent::Cancelled => {
+            app.finalize_assistant_turn();
+            app.mode = InputMode::Normal;
+            app.status = "cancelled".to_string();
+            return true;
+        }
+        AgentEvent::Checkpoint(_) => {
+            // Internal persistence event — ignored in TUI mode.
+        }
+        AgentEvent::Custom { .. } => {
+            // Structured custom events are available to observers but are not
+            // rendered in the default TUI yet.
         }
         AgentEvent::NeedToolExecution { .. } => {
             // Not expected in TUI (all tools are local)
@@ -487,7 +497,9 @@ fn render_messages(f: &mut Frame, area: Rect, app: &AppState) {
                     let token_count = msg.thinking.split_whitespace().count();
                     lines.push(Line::from(Span::styled(
                         format!("\u{1f9e0} Thought for ~{} words", token_count),
-                        Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC),
+                        Style::default()
+                            .fg(Color::DarkGray)
+                            .add_modifier(Modifier::ITALIC),
                     )));
                 }
                 for content_line in msg.content.lines() {
@@ -508,7 +520,9 @@ fn render_messages(f: &mut Frame, area: Rect, app: &AppState) {
         // Show a live thinking indicator while reasoning is still in progress
         lines.push(Line::from(Span::styled(
             "\u{1f9e0} Thinking\u{2026}",
-            Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC),
+            Style::default()
+                .fg(Color::DarkGray)
+                .add_modifier(Modifier::ITALIC),
         )));
     }
     if !app.streaming_content.is_empty() {
@@ -826,7 +840,7 @@ async fn run_app(
                     app.mode = InputMode::Running;
                     app.status = "resuming\u{2026}".to_string();
 
-                    match agent.chat(resume_msg.into()).await {
+                    match agent.chat(ChatCtx::default(), resume_msg.into()).await {
                         Err(e) => {
                             app.status = format!("error: {e}");
                             app.mode = InputMode::Normal;
@@ -864,7 +878,7 @@ async fn run_app(
             app.status = "thinking\u{2026}".to_string();
             terminal.draw(|f| render(f, &app))?;
 
-            match agent.chat(input.into()).await {
+            match agent.chat(ChatCtx::default(), input.into()).await {
                 Err(e) => {
                     app.status = format!("error: {e}");
                     app.mode = InputMode::Normal;

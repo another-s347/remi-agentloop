@@ -6,8 +6,9 @@
 use async_stream::stream;
 use futures::Stream;
 use remi_core::error::AgentError;
-use remi_core::tool::{Tool, ToolContext, ToolOutput, ToolResult};
-use remi_core::types::ResumePayload;
+use remi_core::tool::{parse_arguments, schema_for_type, Tool, ToolOutput, ToolResult};
+use remi_core::types::{ChatCtx, ResumePayload};
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
@@ -20,36 +21,49 @@ pub struct TodoItem {
     pub done: bool,
 }
 
+#[derive(Debug, Deserialize, JsonSchema)]
+struct TodoAddArgs {
+    content: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct TodoListArgs {}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct TodoIdArgs {
+    id: u64,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct TodoUpdateArgs {
+    id: u64,
+    content: String,
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 /// Read the todo list from user_state, defaulting to empty.
-fn read_todos(ctx: &ToolContext) -> Vec<TodoItem> {
-    let us = ctx.user_state.read().unwrap();
-    match us.get("__todos") {
-        Some(v) => serde_json::from_value(v.clone()).unwrap_or_default(),
+fn read_todos(ctx: &ChatCtx) -> Vec<TodoItem> {
+    ctx.with_user_state(|us| match us.get("__todos") {
+        Some(v) => serde_json::from_value::<Vec<TodoItem>>(v.clone()).unwrap_or_default(),
         None => vec![],
-    }
-}
-
-/// Write the todo list back to user_state.
-fn write_todos(ctx: &ToolContext, todos: Vec<TodoItem>) {
-    let mut us = ctx.user_state.write().unwrap();
-    us["__todos"] = serde_json::to_value(&todos).unwrap_or(json!([]));
+    })
 }
 
 /// Atomically modify the todo list under a single write lock to prevent
 /// interleaving when multiple todo tools run in parallel.
 ///
 /// `f` receives the current list and returns `(updated_list, return_value)`.
-fn modify_todos<T>(ctx: &ToolContext, f: impl FnOnce(Vec<TodoItem>) -> (Vec<TodoItem>, T)) -> T {
-    let mut us = ctx.user_state.write().unwrap();
-    let todos: Vec<TodoItem> = match us.get("__todos") {
-        Some(v) => serde_json::from_value(v.clone()).unwrap_or_default(),
-        None => vec![],
-    };
-    let (updated, ret) = f(todos);
-    us["__todos"] = serde_json::to_value(&updated).unwrap_or(json!([]));
-    ret
+fn modify_todos<T>(ctx: &ChatCtx, f: impl FnOnce(Vec<TodoItem>) -> (Vec<TodoItem>, T)) -> T {
+    ctx.update_user_state(|us| {
+        let todos: Vec<TodoItem> = match us.get("__todos") {
+            Some(v) => serde_json::from_value::<Vec<TodoItem>>(v.clone()).unwrap_or_default(),
+            None => vec![],
+        };
+        let (updated, ret) = f(todos);
+        us["__todos"] = serde_json::to_value(&updated).unwrap_or(json!([]));
+        ret
+    })
 }
 
 /// Next ID = max existing + 1 (or 1 if empty).
@@ -84,29 +98,24 @@ impl Tool for TodoAddTool {
         "Add a new todo item. Returns the assigned numeric ID."
     }
     fn parameters_schema(&self) -> serde_json::Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "content": { "type": "string", "description": "The todo item text" }
-            },
-            "required": ["content"]
-        })
+        schema_for_type::<TodoAddArgs>()
     }
 
     async fn execute(
         &self,
         arguments: serde_json::Value,
         _resume: Option<ResumePayload>,
-        ctx: &ToolContext,
+        ctx: ChatCtx,
     ) -> Result<ToolResult<impl Stream<Item = ToolOutput>>, AgentError> {
-        let content = arguments["content"]
-            .as_str()
-            .ok_or_else(|| AgentError::tool("todo__add", "missing 'content'"))?
-            .to_string();
+        let TodoAddArgs { content } = parse_arguments("todo__add", arguments)?;
 
-        let (id, content2) = modify_todos(ctx, |mut todos| {
+        let (id, content2) = modify_todos(&ctx, |mut todos| {
             let id = next_id(&todos);
-            todos.push(TodoItem { id, content: content.clone(), done: false });
+            todos.push(TodoItem {
+                id,
+                content: content.clone(),
+                done: false,
+            });
             (todos, (id, content))
         });
         let (id, content) = (id, content2);
@@ -130,16 +139,16 @@ impl Tool for TodoListTool {
         "List all todo items with their completion status."
     }
     fn parameters_schema(&self) -> serde_json::Value {
-        json!({ "type": "object", "properties": {} })
+        schema_for_type::<TodoListArgs>()
     }
 
     async fn execute(
         &self,
         _arguments: serde_json::Value,
         _resume: Option<ResumePayload>,
-        ctx: &ToolContext,
+        ctx: ChatCtx,
     ) -> Result<ToolResult<impl Stream<Item = ToolOutput>>, AgentError> {
-        let todos = read_todos(ctx);
+        let todos = read_todos(&ctx);
         let text = fmt_todos(&todos);
         Ok(ToolResult::Output(stream! {
             yield ToolOutput::text(text);
@@ -160,35 +169,28 @@ impl Tool for TodoCompleteTool {
         "Mark a todo item as completed by its ID."
     }
     fn parameters_schema(&self) -> serde_json::Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "id": { "type": "integer", "description": "The todo item ID to mark as done" }
-            },
-            "required": ["id"]
-        })
+        schema_for_type::<TodoIdArgs>()
     }
 
     async fn execute(
         &self,
         arguments: serde_json::Value,
         _resume: Option<ResumePayload>,
-        ctx: &ToolContext,
+        ctx: ChatCtx,
     ) -> Result<ToolResult<impl Stream<Item = ToolOutput>>, AgentError> {
-        let id = arguments["id"]
-            .as_u64()
-            .ok_or_else(|| AgentError::tool("todo__complete", "missing 'id'"))?;
+        let TodoIdArgs { id } = parse_arguments("todo__complete", arguments)?;
 
-        let msg = modify_todos(ctx, |mut todos| {
+        let msg = modify_todos(&ctx, |mut todos| {
             let msg = match todos.iter_mut().find(|t| t.id == id) {
-                Some(t) => { t.done = true; format!("Todo #{id} marked as done.") }
+                Some(t) => {
+                    t.done = true;
+                    format!("Todo #{id} marked as done.")
+                }
                 None => format!("Todo #{id} not found."),
             };
             (todos, msg)
         });
-        Ok(ToolResult::Output(
-            stream! { yield ToolOutput::text(msg); },
-        ))
+        Ok(ToolResult::Output(stream! { yield ToolOutput::text(msg); }))
     }
 }
 
@@ -205,40 +207,28 @@ impl Tool for TodoUpdateTool {
         "Update the content text of an existing todo item by its ID."
     }
     fn parameters_schema(&self) -> serde_json::Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "id":      { "type": "integer", "description": "The todo item ID to update" },
-                "content": { "type": "string",  "description": "New text for the todo item" }
-            },
-            "required": ["id", "content"]
-        })
+        schema_for_type::<TodoUpdateArgs>()
     }
 
     async fn execute(
         &self,
         arguments: serde_json::Value,
         _resume: Option<ResumePayload>,
-        ctx: &ToolContext,
+        ctx: ChatCtx,
     ) -> Result<ToolResult<impl Stream<Item = ToolOutput>>, AgentError> {
-        let id = arguments["id"]
-            .as_u64()
-            .ok_or_else(|| AgentError::tool("todo__update", "missing 'id'"))?;
-        let content = arguments["content"]
-            .as_str()
-            .ok_or_else(|| AgentError::tool("todo__update", "missing 'content'"))?
-            .to_string();
+        let TodoUpdateArgs { id, content } = parse_arguments("todo__update", arguments)?;
 
-        let msg = modify_todos(ctx, |mut todos| {
+        let msg = modify_todos(&ctx, |mut todos| {
             let msg = match todos.iter_mut().find(|t| t.id == id) {
-                Some(t) => { t.content = content.clone(); format!("Updated todo #{id}: {content}") }
+                Some(t) => {
+                    t.content = content.clone();
+                    format!("Updated todo #{id}: {content}")
+                }
                 None => format!("Todo #{id} not found."),
             };
             (todos, msg)
         });
-        Ok(ToolResult::Output(
-            stream! { yield ToolOutput::text(msg); },
-        ))
+        Ok(ToolResult::Output(stream! { yield ToolOutput::text(msg); }))
     }
 }
 
@@ -255,26 +245,18 @@ impl Tool for TodoRemoveTool {
         "Permanently remove a todo item by its ID."
     }
     fn parameters_schema(&self) -> serde_json::Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "id": { "type": "integer", "description": "The todo item ID to delete" }
-            },
-            "required": ["id"]
-        })
+        schema_for_type::<TodoIdArgs>()
     }
 
     async fn execute(
         &self,
         arguments: serde_json::Value,
         _resume: Option<ResumePayload>,
-        ctx: &ToolContext,
+        ctx: ChatCtx,
     ) -> Result<ToolResult<impl Stream<Item = ToolOutput>>, AgentError> {
-        let id = arguments["id"]
-            .as_u64()
-            .ok_or_else(|| AgentError::tool("todo__remove", "missing 'id'"))?;
+        let TodoIdArgs { id } = parse_arguments("todo__remove", arguments)?;
 
-        let removed = modify_todos(ctx, |mut todos| {
+        let removed = modify_todos(&ctx, |mut todos| {
             let before = todos.len();
             todos.retain(|t| t.id != id);
             let removed = before != todos.len();

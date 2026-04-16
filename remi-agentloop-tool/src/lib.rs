@@ -18,8 +18,10 @@ pub mod bashkit;
 pub use bash::BashTool;
 
 #[cfg(feature = "tool-fs")]
-pub use fs::{LocalFsCreateTool, LocalFsLsTool, LocalFsReadTool, LocalFsRemoveTool,
-             LocalFsToolkit, LocalFsWriteTool};
+pub use fs::{
+    LocalFsCreateTool, LocalFsLsTool, LocalFsReadTool, LocalFsRemoveTool, LocalFsToolkit,
+    LocalFsWriteTool,
+};
 
 #[cfg(feature = "tool-fs-virtual")]
 pub use bkfs::{FsCreateTool, FsLsTool, FsReadTool, FsRemoveTool, FsToolkit, FsWriteTool};

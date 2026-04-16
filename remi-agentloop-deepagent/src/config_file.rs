@@ -219,13 +219,11 @@ impl DeepAgentConfig {
     /// Return an error if no API key is available.
     pub fn require_api_key(&self) -> Result<(), String> {
         if self.model.api_key.is_empty() {
-            return Err(
-                "No API key configured.\n\
+            return Err("No API key configured.\n\
                  Set api_key in deep-agent.toml [model] section,\n\
                  or set the OPENAI_API_KEY environment variable.\n\
                  Tip: run with --init to create an example deep-agent.toml."
-                    .to_string(),
-            );
+                .to_string());
         }
         Ok(())
     }
@@ -253,7 +251,10 @@ impl DeepAgentConfig {
             builder = builder.system(system);
         }
         // Explicit config key takes priority; fall back to env var.
-        let exa_key = self.search.exa_api_key.clone()
+        let exa_key = self
+            .search
+            .exa_api_key
+            .clone()
             .or_else(|| std::env::var("EXA_API_KEY").ok());
         if let Some(key) = exa_key {
             builder = builder.exa_api_key(key);
@@ -404,10 +405,22 @@ a task is ambiguous rather than proceeding on wrong assumptions.
 
 mod defaults {
     use std::path::PathBuf;
-    pub fn model() -> String { "gpt-4o".to_string() }
-    pub fn max_turns() -> usize { 20 }
-    pub fn workspace_dir() -> PathBuf { PathBuf::from(".deepagent/workspace") }
-    pub fn task_turns() -> usize { 10 }
-    pub fn spill_threshold() -> usize { 4096 }
-    pub fn save_tool_results() -> bool { true }
+    pub fn model() -> String {
+        "gpt-4o".to_string()
+    }
+    pub fn max_turns() -> usize {
+        20
+    }
+    pub fn workspace_dir() -> PathBuf {
+        PathBuf::from(".deepagent/workspace")
+    }
+    pub fn task_turns() -> usize {
+        10
+    }
+    pub fn spill_threshold() -> usize {
+        4096
+    }
+    pub fn save_tool_results() -> bool {
+        true
+    }
 }
